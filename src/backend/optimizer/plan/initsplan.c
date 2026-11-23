@@ -1392,8 +1392,11 @@ deconstruct_recurse(PlannerInfo *root, Node *jtnode,
 				/* Compute qualscope etc */
 				jtitem->qualscope = bms_union(left_item->qualscope,
 											  right_item->qualscope);
-				/* SEMI join never has rtindex, so don't add to anything */
-				Assert(j->rtindex == 0);
+				/*
+				 * Alias Vars have been flattened.  An explicit semijoin
+				 * needs no outer-join identity in subsequent planning.
+				 */
+				j->rtindex = 0;
 				jtitem->inner_join_rels = bms_union(left_item->inner_join_rels,
 													right_item->inner_join_rels);
 				jtitem->left_rels = left_item->qualscope;

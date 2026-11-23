@@ -1215,7 +1215,7 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		/*
 		 * Generate combined namespace info for possible use below.
 		 */
-		my_namespace = list_concat(l_namespace, r_namespace);
+		my_namespace = list_concat(list_copy(l_namespace), r_namespace);
 
 		/*
 		 * We'll work from the nscolumns data and eref alias column names for
@@ -1430,6 +1430,7 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		switch (j->jointype)
 		{
 			case JOIN_INNER:
+			case JOIN_SEMI:
 				break;
 			case JOIN_LEFT:
 				markRelsAsNulledBy(pstate, j->rarg, j->rtindex);
@@ -1517,11 +1518,14 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 									l_nscolumns, l_colnames, &l_colnos,
 									&res_colnames, &res_colvars,
 									res_nscolumns + res_colindex);
-		res_colindex +=
-			extractRemainingColumns(pstate,
-									r_nscolumns, r_colnames, &r_colnos,
-									&res_colnames, &res_colvars,
-									res_nscolumns + res_colindex);
+		if (j->jointype != JOIN_SEMI)
+		{
+			res_colindex +=
+				extractRemainingColumns(pstate,
+										r_nscolumns, r_colnames, &r_colnos,
+										&res_colnames, &res_colvars,
+										res_nscolumns + res_colindex);
+		}
 
 		/* If join has an alias, it syntactically hides all inputs */
 		if (j->alias)
@@ -1605,7 +1609,13 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		if (j->alias != NULL)
 			my_namespace = NIL;
 		else
+		{
+			/* The right input is visible only within the ON clause. */
+			if (j->jointype == JOIN_SEMI)
+				my_namespace = l_namespace;
+
 			setNamespaceColumnVisibility(my_namespace, false);
+		}
 
 		/*
 		 * The join RTE itself is always made visible for unqualified column

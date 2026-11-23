@@ -1,0 +1,356 @@
+-- Explicit semijoins preserve left duplicates, not right matches.
+CREATE TABLE semi_l (id int, label text);
+CREATE TABLE semi_r (id int, active bool);
+INSERT INTO semi_l VALUES (1, 'one'), (1, 'one'), (2, 'two'), (3, 'three'), (NULL, 'null');
+INSERT INTO semi_r VALUES (1, true), (1, true), (2, false), (NULL, true);
+SELECT * FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id ORDER BY l.id;
+ id | label 
+----+-------
+  1 | one
+  1 | one
+  2 | two
+(3 rows)
+
+SELECT * FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id AND r.active ORDER BY l.id;
+ id | label 
+----+-------
+  1 | one
+  1 | one
+(2 rows)
+
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id = r.id))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id < r.id),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id < r.id))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id IS NOT DISTINCT FROM r.id),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id IS NOT DISTINCT FROM r.id))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id AND EXISTS (SELECT 1 FROM semi_r x WHERE x.id = r.id AND x.active)),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id = r.id AND EXISTS (SELECT 1 FROM semi_r x WHERE x.id = r.id AND x.active)))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id AND r.id IN (SELECT x.id FROM semi_r x WHERE x.active)),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id = r.id AND r.id IN (SELECT x.id FROM semi_r x WHERE x.active)))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+SET enable_hashjoin = off; SET enable_mergejoin = off;
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id = r.id))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id < r.id),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id < r.id))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id IS NOT DISTINCT FROM r.id),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id IS NOT DISTINCT FROM r.id))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id AND EXISTS (SELECT 1 FROM semi_r x WHERE x.id = r.id AND x.active)),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id = r.id AND EXISTS (SELECT 1 FROM semi_r x WHERE x.id = r.id AND x.active)))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id AND r.id IN (SELECT x.id FROM semi_r x WHERE x.active)),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id = r.id AND r.id IN (SELECT x.id FROM semi_r x WHERE x.active)))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+SET enable_hashjoin = off; SET enable_mergejoin = on; SET enable_nestloop = off;
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id = r.id))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id < r.id),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id < r.id))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id IS NOT DISTINCT FROM r.id),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id IS NOT DISTINCT FROM r.id))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id AND EXISTS (SELECT 1 FROM semi_r x WHERE x.id = r.id AND x.active)),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id = r.id AND EXISTS (SELECT 1 FROM semi_r x WHERE x.id = r.id AND x.active)))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id AND r.id IN (SELECT x.id FROM semi_r x WHERE x.active)),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id = r.id AND r.id IN (SELECT x.id FROM semi_r x WHERE x.active)))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+SET enable_hashjoin = on; SET enable_mergejoin = off; SET enable_nestloop = off;
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id = r.id))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id < r.id),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id < r.id))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id IS NOT DISTINCT FROM r.id),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id IS NOT DISTINCT FROM r.id))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id AND EXISTS (SELECT 1 FROM semi_r x WHERE x.id = r.id AND x.active)),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id = r.id AND EXISTS (SELECT 1 FROM semi_r x WHERE x.id = r.id AND x.active)))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+WITH actual AS (SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id AND r.id IN (SELECT x.id FROM semi_r x WHERE x.active)),
+expected AS (SELECT l.* FROM semi_l l WHERE EXISTS (SELECT 1 FROM semi_r r WHERE l.id = r.id AND r.id IN (SELECT x.id FROM semi_r x WHERE x.active)))
+SELECT NOT EXISTS ((TABLE actual EXCEPT ALL TABLE expected)
+                   UNION ALL (TABLE expected EXCEPT ALL TABLE actual)) AS matches_exists;
+ matches_exists 
+----------------
+ t
+(1 row)
+
+RESET enable_hashjoin;
+RESET enable_mergejoin;
+RESET enable_nestloop;
+SELECT * FROM semi_l l SEMI JOIN semi_r r ON false;
+ id | label 
+----+-------
+(0 rows)
+
+SELECT * FROM semi_l l SEMI JOIN (SELECT * FROM semi_r WHERE false) r ON l.id = r.id;
+ id | label 
+----+-------
+(0 rows)
+
+SELECT j.* FROM (semi_l l SEMI JOIN semi_r r ON l.id = r.id) j ORDER BY j.id;
+ id | label 
+----+-------
+  1 | one
+  1 | one
+  2 | two
+(3 rows)
+
+SELECT l.* FROM semi_l l SEMI JOIN (semi_r r JOIN semi_r x ON r.id = x.id) ON l.id = r.id ORDER BY l.id;
+ id | label 
+----+-------
+  1 | one
+  1 | one
+  2 | two
+(3 rows)
+
+SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id SEMI JOIN semi_r x ON l.id = x.id ORDER BY l.id;
+ id | label 
+----+-------
+  1 | one
+  1 | one
+  2 | two
+(3 rows)
+
+SELECT l.* FROM semi_l l LEFT JOIN semi_r r ON l.id = r.id SEMI JOIN semi_r x ON l.id = x.id ORDER BY l.id;
+ id | label 
+----+-------
+  1 | one
+  1 | one
+  1 | one
+  1 | one
+  2 | two
+(5 rows)
+
+SELECT l.* FROM semi_l l SEMI JOIN (VALUES (1), (2)) r(id) ON l.id = r.id ORDER BY l.id;
+ id | label 
+----+-------
+  1 | one
+  1 | one
+  2 | two
+(3 rows)
+
+SELECT l.* FROM semi_l l SEMI JOIN semi_r r ON true ORDER BY l.id NULLS LAST;
+ id | label 
+----+-------
+  1 | one
+  1 | one
+  2 | two
+  3 | three
+    | null
+(5 rows)
+
+-- Right-side names must not escape the join.
+SELECT r.id FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id;
+ERROR:  invalid reference to FROM-clause entry for table "r"
+LINE 1: SELECT r.id FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id;
+               ^
+DETAIL:  There is an entry for table "r", but it cannot be referenced from this part of the query.
+SELECT * FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id WHERE r.active;
+ERROR:  invalid reference to FROM-clause entry for table "r"
+LINE 1: ...M semi_l l SEMI JOIN semi_r r ON l.id = r.id WHERE r.active;
+                                                              ^
+DETAIL:  There is an entry for table "r", but it cannot be referenced from this part of the query.
+SELECT r.* FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id;
+ERROR:  invalid reference to FROM-clause entry for table "r"
+LINE 1: SELECT r.* FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id;
+               ^
+DETAIL:  There is an entry for table "r", but it cannot be referenced from this part of the query.
+-- Unsupported syntax must fail.
+SELECT * FROM semi_l SEMI JOIN semi_r USING (id);
+ERROR:  syntax error at or near "USING"
+LINE 1: SELECT * FROM semi_l SEMI JOIN semi_r USING (id);
+                                              ^
+SELECT * FROM semi_l NATURAL SEMI JOIN semi_r;
+ERROR:  syntax error at or near "SEMI"
+LINE 1: SELECT * FROM semi_l NATURAL SEMI JOIN semi_r;
+                                     ^
+-- Views must deparse and reparse, including after schema changes.
+CREATE VIEW semi_v AS SELECT * FROM semi_l l SEMI JOIN semi_r r ON l.id = r.id;
+CREATE VIEW semi_named AS SELECT j.* FROM (semi_l l SEMI JOIN semi_r r ON l.id = r.id) j;
+SELECT pg_get_viewdef('semi_v'::regclass);
+                pg_get_viewdef                
+----------------------------------------------
+  SELECT l.id,                               +
+     l.label                                 +
+    FROM (semi_l l                           +
+      SEMI JOIN semi_r r ON ((l.id = r.id)));
+(1 row)
+
+SELECT pg_get_viewdef('semi_named'::regclass);
+                 pg_get_viewdef                 
+------------------------------------------------
+  SELECT j.id,                                 +
+     j.label                                   +
+    FROM (semi_l l                             +
+      SEMI JOIN semi_r r ON ((l.id = r.id))) j;
+(1 row)
+
+ALTER TABLE semi_l ADD COLUMN extra int;
+ALTER TABLE semi_r ADD COLUMN extra int;
+SELECT pg_get_viewdef('semi_v'::regclass);
+                pg_get_viewdef                
+----------------------------------------------
+  SELECT l.id,                               +
+     l.label                                 +
+    FROM (semi_l l                           +
+      SEMI JOIN semi_r r ON ((l.id = r.id)));
+(1 row)
+
+SELECT pg_get_viewdef('semi_named'::regclass);
+                 pg_get_viewdef                 
+------------------------------------------------
+  SELECT j.id,                                 +
+     j.label                                   +
+    FROM (semi_l l                             +
+      SEMI JOIN semi_r r ON ((l.id = r.id))) j;
+(1 row)
+
+DO $$ BEGIN
+ EXECUTE 'CREATE VIEW semi_copy AS ' || pg_get_viewdef('semi_v'::regclass);
+ EXECUTE 'CREATE VIEW semi_named_copy AS ' || pg_get_viewdef('semi_named'::regclass);
+END $$;
+SELECT * FROM semi_copy ORDER BY id;
+ id | label 
+----+-------
+  1 | one
+  1 | one
+  2 | two
+(3 rows)
+
+SELECT * FROM semi_named_copy ORDER BY id;
+ id | label 
+----+-------
+  1 | one
+  1 | one
+  2 | two
+(3 rows)
+
+DROP VIEW semi_copy, semi_named_copy, semi_v, semi_named;
+DROP TABLE semi_l, semi_r;

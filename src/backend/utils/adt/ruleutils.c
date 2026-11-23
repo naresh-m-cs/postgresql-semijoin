@@ -4679,8 +4679,10 @@ set_join_column_names(deparse_namespace *dpns, RangeTblEntry *rte,
 	 * Note: colname_is_unique will be consulting new_colnames[] during the
 	 * loops below, so its not-yet-filled entries must be zeroes.
 	 */
-	nnewcolumns = leftcolinfo->num_new_cols + rightcolinfo->num_new_cols -
-		list_length(colinfo->usingNames);
+	nnewcolumns = leftcolinfo->num_new_cols;
+	if (rte->jointype != JOIN_SEMI)
+		nnewcolumns += rightcolinfo->num_new_cols -
+			list_length(colinfo->usingNames);
 	colinfo->num_new_cols = nnewcolumns;
 	colinfo->new_colnames = (char **) palloc0(nnewcolumns * sizeof(char *));
 	colinfo->is_new_col = (bool *) palloc0(nnewcolumns * sizeof(bool));
@@ -4772,7 +4774,8 @@ set_join_column_names(deparse_namespace *dpns, RangeTblEntry *rte,
 
 	/* Handle non-merged right-child columns in exactly the same way */
 	ic = 0;
-	for (jc = 0; jc < rightcolinfo->num_new_cols; jc++)
+	for (jc = 0; rte->jointype != JOIN_SEMI &&
+		 jc < rightcolinfo->num_new_cols; jc++)
 	{
 		char	   *child_colname = rightcolinfo->new_colnames[jc];
 
@@ -12587,6 +12590,12 @@ get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 										 -PRETTYINDENT_STD,
 										 PRETTYINDENT_STD,
 										 PRETTYINDENT_JOIN);
+				break;
+			case JOIN_SEMI:
+				appendContextKeyword(context, " SEMI JOIN ",
+									 -PRETTYINDENT_STD,
+									 PRETTYINDENT_STD,
+									 PRETTYINDENT_JOIN);
 				break;
 			case JOIN_LEFT:
 				appendContextKeyword(context, " LEFT JOIN ",

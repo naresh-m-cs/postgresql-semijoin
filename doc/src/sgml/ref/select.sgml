@@ -60,6 +60,7 @@ SELECT [ ALL | DISTINCT [ ON ( <replaceable class="parameter">expression</replac
     [ LATERAL ] ROWS FROM( <replaceable class="parameter">function_name</replaceable> ( [ <replaceable class="parameter">argument</replaceable> [, ...] ] ) [ AS ( <replaceable class="parameter">column_definition</replaceable> [, ...] ) ] [, ...] )
                 [ WITH ORDINALITY ] [ [ AS ] <replaceable class="parameter">alias</replaceable> [ ( <replaceable class="parameter">column_alias</replaceable> [, ...] ) ] ]
     <replaceable class="parameter">from_item</replaceable> <replaceable class="parameter">join_type</replaceable> <replaceable class="parameter">from_item</replaceable> { ON <replaceable class="parameter">join_condition</replaceable> | USING ( <replaceable class="parameter">join_column</replaceable> [, ...] ) [ AS <replaceable class="parameter">join_using_alias</replaceable> ] }
+    <replaceable class="parameter">from_item</replaceable> SEMI JOIN <replaceable class="parameter">from_item</replaceable> ON <replaceable class="parameter">join_condition</replaceable>
     <replaceable class="parameter">from_item</replaceable> NATURAL <replaceable class="parameter">join_type</replaceable> <replaceable class="parameter">from_item</replaceable>
     <replaceable class="parameter">from_item</replaceable> CROSS JOIN <replaceable class="parameter">from_item</replaceable>
 
@@ -690,6 +691,21 @@ TABLE [ ONLY ] <replaceable class="parameter">table_name</replaceable> [ * ]
         <replaceable class="parameter">alias</replaceable>, you cannot write a
         column alias list &mdash; the output names of the join columns are the
         same as they appear in the <literal>USING</literal> list.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>SEMI JOIN</literal></term>
+      <listitem>
+       <para>
+        Returns each left-side row for which at least one right-side row
+        satisfies the <literal>ON</literal> condition.  Multiple matches do
+        not duplicate a left-side row; duplicate rows in the left input are
+        preserved.  Only left-side columns appear in the result.  Right-side
+        table names are available inside the join condition, but not outside
+        the join.  Only the <literal>ON</literal> form is supported;
+        <literal>USING</literal> and <literal>NATURAL</literal> are not supported.
        </para>
       </listitem>
      </varlistentry>

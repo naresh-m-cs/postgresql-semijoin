@@ -587,8 +587,8 @@ pull_up_sublinks_jointree_recurse(PlannerInfo *root, Node *jtnode,
 		 * point of the available_rels machinations is to ensure that we only
 		 * pull up quals for which that's okay.
 		 *
-		 * We don't expect to see any pre-existing JOIN_SEMI, JOIN_ANTI,
-		 * JOIN_RIGHT_SEMI, or JOIN_RIGHT_ANTI jointypes here.
+		 * Explicit JOIN_SEMI nodes may already be present.  JOIN_ANTI,
+		 * JOIN_RIGHT_SEMI, and JOIN_RIGHT_ANTI are not expected here.
 		 */
 		switch (j->jointype)
 		{
@@ -598,6 +598,9 @@ pull_up_sublinks_jointree_recurse(PlannerInfo *root, Node *jtnode,
 														 bms_union(leftrelids,
 																   rightrelids),
 														 NULL, NULL);
+				break;
+			case JOIN_SEMI:
+				/* Leave explicit semijoin sublinks for later processing. */
 				break;
 			case JOIN_LEFT:
 				j->quals = pull_up_sublinks_qual_recurse(root, j->quals,
@@ -4011,12 +4014,13 @@ remove_useless_results_recurse(PlannerInfo *root, Node *jtnode,
 				 * infrastructure for that, but remove_result_refs() will
 				 * relabel them as to be evaluated at the LHS, which is fine.
 				 *
-				 * Also, we don't need to worry about removing traces of the
-				 * join's rtindex, since it hasn't got one.
+				 * Join alias Vars have already been flattened, and a semijoin
+				 * does not introduce nulling relids, so its join RTE can be
+				 * left unused when the join is removed.
 				 */
 				if ((varno = get_result_relid(root, j->rarg)) != 0)
 				{
-					Assert(j->rtindex == 0);
+					/* Explicit semijoins can have an unused join RTE. */
 					remove_result_refs(root, varno, j->larg);
 					if (j->quals != NULL && parent_quals == NULL)
 						jtnode = (Node *)
@@ -4417,7 +4421,7 @@ get_relids_in_jointree(Node *jtnode, bool include_outer_joins,
 												 include_inner_joins));
 		if (j->rtindex)
 		{
-			if (j->jointype == JOIN_INNER)
+			if (j->jointype == JOIN_INNER || j->jointype == JOIN_SEMI)
 			{
 				if (include_inner_joins)
 					result = bms_add_member(result, j->rtindex);
@@ -4555,11 +4559,11 @@ get_nullingrels_recurse(Node *jtnode, Relids upper_nullingrels,
 		switch (j->jointype)
 		{
 			case JOIN_INNER:
+			case JOIN_SEMI:
 				get_nullingrels_recurse(j->larg, upper_nullingrels, info);
 				get_nullingrels_recurse(j->rarg, upper_nullingrels, info);
 				break;
 			case JOIN_LEFT:
-			case JOIN_SEMI:
 			case JOIN_ANTI:
 				local_nullingrels = bms_add_member(bms_copy(upper_nullingrels),
 												   j->rtindex);

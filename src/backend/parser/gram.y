@@ -767,7 +767,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	RESET RESTART RESTRICT RETURN RETURNING RETURNS REVOKE RIGHT ROLE ROLLBACK ROLLUP
 	ROUTINE ROUTINES ROW ROWS RULE
 
-	SAVEPOINT SCALAR SCHEMA SCHEMAS SCROLL SEARCH SECOND_P SECURITY SELECT
+	SAVEPOINT SCALAR SCHEMA SCHEMAS SCROLL SEARCH SECOND_P SECURITY SELECT SEMI
 	SEQUENCE SEQUENCES
 	SERIALIZABLE SERVER SESSION SESSION_USER SET SETS SETOF SHARE SHOW
 	SIMILAR SIMPLE SKIP SMALLINT SNAPSHOT SOME SOURCE SQL_P STABLE STANDALONE_P
@@ -900,7 +900,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
  * They wouldn't be given a precedence at all, were it not that we need
  * left-associativity among the JOIN rules themselves.
  */
-%left		JOIN CROSS LEFT FULL RIGHT INNER_P NATURAL
+%left		JOIN CROSS LEFT FULL RIGHT INNER_P NATURAL SEMI
 
 %%
 
@@ -13735,6 +13735,19 @@ joined_table:
 					n->quals = NULL;
 					$$ = n;
 				}
+			| table_ref SEMI JOIN table_ref ON a_expr
+				{
+					JoinExpr   *n = makeNode(JoinExpr);
+
+					n->jointype = JOIN_SEMI;
+					n->isNatural = false;
+					n->larg = $1;
+					n->rarg = $4;
+					n->usingClause = NIL;
+					n->join_using_alias = NULL;
+					n->quals = $6;
+					$$ = n;
+				}
 			| table_ref join_type JOIN table_ref join_qual
 				{
 					JoinExpr   *n = makeNode(JoinExpr);
@@ -18122,6 +18135,7 @@ type_func_name_keyword:
 			| OUTER_P
 			| OVERLAPS
 			| RIGHT
+			| SEMI
 			| SIMILAR
 			| TABLESAMPLE
 			| VERBOSE
@@ -18571,6 +18585,7 @@ bare_label_keyword:
 			| SEARCH
 			| SECURITY
 			| SELECT
+			| SEMI
 			| SEQUENCE
 			| SEQUENCES
 			| SERIALIZABLE
