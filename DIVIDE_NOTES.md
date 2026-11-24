@@ -54,6 +54,35 @@ Syntax: `R DIVIDE S [USING (cols)]` → native executor node (`JOIN_DIVIDE`).
 
 ### `src/backend/parser/parse_clause.c` (`transformFromClauseItem`)
 - Added `case JOIN_DIVIDE` to the join-type switch, which previously hit `default: elog(ERROR, "unrecognized join type")`.
-  - Placeholder for now: `elog(DEBUG1, ...)` only, so we can confirm a divide reaches analysis. To see it, run `SET client_min_messages = debug1;`.
+  - Fetches left (R) and right (S) column names from `l_colnames` / `r_colnames`.
+    - These are filled in earlier in the function for every join type, from each side's namespace item (`p_names->colnames`).
+    - They work for any input (table, subquery, function, nested join), unlike digging into `larg`/`rarg` directly.
+    - Dropped columns appear as empty strings, so they're skipped.
+  - For now each name is printed with `elog(DEBUG1, ...)` to confirm the columns are right. Run `SET client_min_messages = debug1;` to see them.
   - No `markRelsAsNulledBy`: divide never pads rows with NULLs.
   - TODO: divisor columns, output columns (R minus divisor), hide S outside the divide.
+- No separate natural vs. `USING` handling: `j->usingClause` holds the divisor columns for both forms.
+  - Earlier in the function, the `isNatural` block already converts `R DIVIDE S` into a `usingClause` of shared column names.
+  - Existing code after it also checks that each `USING` column exists in both inputs, for both forms.
+- Error if `j->usingClause` is empty: "DIVIDE requires at least one divisor column".
+  - Only the natural form can hit this (no shared column names); the grammar requires at least one name in `USING (...)`.
+  - Dividing by zero columns has no meaning.
+- No new code needed to check that `USING` columns exist: the shared `USING` loop (runs before the join-type switch) already raises errors for a column missing from the left or right input, listed twice, or ambiguous in one input.
+- Count the quotient columns (R's columns minus dropped and divisor ones).
+  - "Divisor" is checked by position in `l_colnos` (filled by the `USING` loop), not by "does S have this name". In the `USING` form, R may share an unlisted column with S, and that column still belongs to the quotient.
+  - Only a count is kept. The quotient columns themselves end up in the join's output-column list (see below), so separate `q_colnames` / `q_colnos` lists were redundant and removed.
+  - Error if zero: dividing when every R column is a divisor leaves nothing to return.
+- Hide S outside the divide, same as SEMI JOIN, in two places:
+  - Output columns: S's remaining (non-`USING`) columns are not added to the join's result columns (`extractRemainingColumns` is skipped for the right side). Hides them from `SELECT *` and unqualified names.
+  - Namespace: `my_namespace = l_namespace`, so `s.col` gives "missing FROM-clause entry". Hides qualified names.
+  - Why: an output row is one quotient value, not paired with any single S row, so S's columns have no value to return.
+  - Still to do: the merged `USING` (divisor) columns remain in the output, and R's own divisor columns (`r.b`) are still visible. The output-column step must reduce the output to the quotient columns only.
+- Output = quotient columns only. The divisor (`USING`) columns are kept out of the output in two places:
+  - `USING` loop: the column name is not added to `res_colnames` for DIVIDE.
+  - Merged-column block (`if (j->usingClause ...)`): skipped for DIVIDE, so no output value is built for divisor columns. `buildMergedJoinVar` would also raise "unrecognized join type" for DIVIDE.
+  - What remains: `extractRemainingColumns` on the left side adds R's non-`USING`, non-dropped columns, which are exactly the quotient columns.
+  - The generated `USING` condition (`r.b = s.b`) is still built and kept in `j->quals`, so the executor knows how R's and S's divisor columns match.
+- Hide R's name too: `my_namespace = NIL` for DIVIDE (replaces the SEMI-style `my_namespace = l_namespace`).
+  - Why: `r.b` (a divisor column) has no single value per quotient row. Left visible, `SELECT r.b ...` would fail later with an internal planner error or return an arbitrary value.
+  - PostgreSQL can hide a whole table name but not a single column, so `r.a` goes too. Per-column hiding would need changes to shared lookup code; not worth it.
+  - Quotient columns stay reachable: unqualified (`a`) through the join's own entry, or `q.a` with `(r DIVIDE s) AS q`. Same rule as an aliased join.

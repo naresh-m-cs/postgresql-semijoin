@@ -1390,8 +1390,11 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 				 * corresponding res_colvars entries are not made till later,
 				 * but doing this later would require an additional traversal
 				 * of the usingClause list.
+				 *
+				 * DIVIDE: divisor columns are not output columns.
 				 */
-				res_colnames = lappend(res_colnames, lfirst(ucol));
+				if (j->jointype != JOIN_DIVIDE)
+					res_colnames = lappend(res_colnames, lfirst(ucol));
 			}
 
 			/* Construct the generated JOIN ON clause */
@@ -1443,8 +1446,85 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 				markRelsAsNulledBy(pstate, j->larg, j->rtindex);
 				break;
 			case JOIN_DIVIDE:
-				/* TODO: divisor columns, output columns, namespace rules */
-				elog(DEBUG1, "transformFromClauseItem: reached JOIN_DIVIDE");
+				{
+					/*
+					 * Left (dividend) and right (divisor) column names come
+					 * from l_colnames / r_colnames, filled in above for every
+					 * join type.  Dropped columns appear as empty strings.
+					 *
+					 * Output columns (quotient only) and hiding S are handled
+					 * further down, outside this switch.
+					 */
+					ListCell   *lc;
+					int			attno;
+					int			nquotient;
+
+					elog(DEBUG1, "transformFromClauseItem: reached JOIN_DIVIDE");
+
+					/*
+					 * The isNatural block above has already turned
+					 * "R DIVIDE S" into a USING list of the shared column
+					 * names, so usingClause holds the divisor columns for
+					 * both syntax forms.  Only the natural form can leave it
+					 * empty (no shared names); the grammar requires at least
+					 * one name in an explicit USING list.
+					 */
+					if (j->usingClause == NIL)
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("DIVIDE requires at least one divisor column"),
+								 errhint("The inputs share no column names; use DIVIDE ... USING (...).")));
+
+					elog(DEBUG1, "DIVIDE: %d divisor column(s)",
+						 list_length(j->usingClause));
+
+					/*
+					 * Quotient columns: every column of R that is not a
+					 * divisor column.  They become the output columns via
+					 * extractRemainingColumns below; here we only check that
+					 * at least one exists.  l_colnos holds the 1-based
+					 * positions in R of the divisor columns (filled by the
+					 * USING loop above).  Compare by position, not "is it in
+					 * S": in the USING form R may share an unlisted column
+					 * with S, and that column still belongs to the quotient.
+					 */
+					nquotient = 0;
+					attno = 0;
+					foreach(lc, l_colnames)
+					{
+						char	   *colname = strVal(lfirst(lc));
+
+						attno++;
+						if (colname[0] == '\0')
+							continue;	/* dropped column */
+						if (list_member_int(l_colnos, attno))
+							continue;	/* divisor column */
+
+						nquotient++;
+						elog(DEBUG1, "DIVIDE quotient column: %s (R position %d)",
+							 colname, attno);
+					}
+
+					if (nquotient == 0)
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("DIVIDE requires at least one non-divisor column in the left input")));
+
+					foreach(lc, l_colnames)
+					{
+						char	   *colname = strVal(lfirst(lc));
+
+						if (colname[0] != '\0')
+							elog(DEBUG1, "DIVIDE left column: %s", colname);
+					}
+					foreach(lc, r_colnames)
+					{
+						char	   *colname = strVal(lfirst(lc));
+
+						if (colname[0] != '\0')
+							elog(DEBUG1, "DIVIDE right column: %s", colname);
+					}
+				}
 				break;
 			default:
 				/* shouldn't see any other types here */
@@ -1455,8 +1535,10 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 
 		/*
 		 * Now we can construct join alias expressions for the USING columns.
+		 * DIVIDE skips this: its USING (divisor) columns are not output
+		 * columns, and buildMergedJoinVar has no meaning for it.
 		 */
-		if (j->usingClause)
+		if (j->usingClause && j->jointype != JOIN_DIVIDE)
 		{
 			ListCell   *lc1,
 					   *lc2;
@@ -1516,13 +1598,18 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 			}
 		}
 
-		/* Add remaining columns from each side to the output columns */
+		/*
+		 * Add remaining columns from each side to the output columns.  For
+		 * DIVIDE, the left side's remaining (non-USING) columns are exactly
+		 * the quotient columns, and they are its only output.
+		 */
 		res_colindex +=
 			extractRemainingColumns(pstate,
 									l_nscolumns, l_colnames, &l_colnos,
 									&res_colnames, &res_colvars,
 									res_nscolumns + res_colindex);
-		if (j->jointype != JOIN_SEMI)
+		/* SEMI and DIVIDE output only left-side columns */
+		if (j->jointype != JOIN_SEMI && j->jointype != JOIN_DIVIDE)
 		{
 			res_colindex +=
 				extractRemainingColumns(pstate,
@@ -1614,9 +1701,20 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 			my_namespace = NIL;
 		else
 		{
-			/* The right input is visible only within the ON clause. */
+			/* SEMI: the right input is visible only within the ON clause. */
 			if (j->jointype == JOIN_SEMI)
 				my_namespace = l_namespace;
+
+			/*
+			 * DIVIDE: neither input is visible by name outside the divide.
+			 * S's columns have no value per output row, and neither do R's
+			 * divisor columns (r.b); PostgreSQL can only hide a whole name,
+			 * so R's name goes too.  Quotient columns remain reachable
+			 * unqualified via the join RTE below, or as alias.col if the
+			 * divide is aliased.
+			 */
+			if (j->jointype == JOIN_DIVIDE)
+				my_namespace = NIL;
 
 			setNamespaceColumnVisibility(my_namespace, false);
 		}
