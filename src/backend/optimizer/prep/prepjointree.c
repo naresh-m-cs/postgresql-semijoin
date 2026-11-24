@@ -1252,11 +1252,19 @@ pull_up_subqueries_recurse(PlannerInfo *root, Node *jtnode,
 													 lowest_outer_join,
 													 NULL);
 				break;
+			case JOIN_DIVIDE:
+
+				/*
+				 * Don't pull up subqueries in either input of a divide.  The
+				 * quotient is grouped by R's output column values; if a
+				 * subquery column like "a % 2 AS q" were flattened into its
+				 * underlying Vars, the divide would group by "a" instead of
+				 * "q" and give wrong answers.  Its inputs stay subquery scans.
+				 */
+				break;
 			case JOIN_LEFT:
 			case JOIN_SEMI:
 			case JOIN_ANTI:
-			case JOIN_DIVIDE:
-				/* DIVIDE: like these, treat j as the lowest outer join */
 				j->larg = pull_up_subqueries_recurse(root, j->larg,
 													 j,
 													 NULL);

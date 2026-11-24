@@ -1405,8 +1405,18 @@ deconstruct_recurse(PlannerInfo *root, Node *jtnode,
 				jtitem->nonnullable_rels = NULL;
 				break;
 			case JOIN_DIVIDE:
-				/* This node belongs to parent_domain, as do its children */
-				jtitem->jdomain = parent_domain;
+
+				/*
+				 * Like a LEFT JOIN's RHS, the divisor gets its own join
+				 * domain for the divide's quals and S, so that nothing about
+				 * S (e.g. a constant-false qual making it empty) is applied
+				 * above the divide.  An empty S makes every quotient value
+				 * qualify; it does not make the divide empty.
+				 */
+				child_domain = makeNode(JoinDomain);
+				child_domain->jd_relids = NULL; /* filled by recursion */
+				root->join_domains = lappend(root->join_domains, child_domain);
+				jtitem->jdomain = child_domain;
 				/* Recurse */
 				leftjoinlist = deconstruct_recurse(root, j->larg,
 												   parent_domain,
@@ -1414,10 +1424,13 @@ deconstruct_recurse(PlannerInfo *root, Node *jtnode,
 												   item_list);
 				left_item = (JoinTreeItem *) llast(*item_list);
 				rightjoinlist = deconstruct_recurse(root, j->rarg,
-													parent_domain,
+													child_domain,
 													jtitem,
 													item_list);
 				right_item = (JoinTreeItem *) llast(*item_list);
+				parent_domain->jd_relids =
+					bms_add_members(parent_domain->jd_relids,
+									child_domain->jd_relids);
 				/* Compute qualscope etc */
 				jtitem->qualscope = bms_union(left_item->qualscope,
 											  right_item->qualscope);

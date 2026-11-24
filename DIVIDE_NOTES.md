@@ -93,7 +93,8 @@ Key idea: the divide's quals (`r.b = s.b`, from `USING`) are **matching rules**,
 
 ### Part 1: `src/backend/optimizer/prep/prepjointree.c` (query-tree simplification)
 - `pull_up_sublinks_jointree_recurse`: `JOIN_DIVIDE` does nothing. Its quals are only the generated equalities, so there are no sublinks to pull up.
-- `pull_up_subqueries_recurse`: grouped with LEFT/SEMI/ANTI. Subqueries under the divide can be flattened, but the divide is passed as `lowest_outer_join`, so pulled-up expressions get wrapped safely.
+- `pull_up_subqueries_recurse`: does **not** recurse into a divide's inputs; subqueries there stay subquery scans.
+  - Why (bug found by the regression test): the quotient is grouped by R's output column values. Flattening `(SELECT a % 2 AS q, b FROM t)` made the divide group by `a` instead of `q`, which gave wrong answers.
 - `reduce_outer_joins_pass2`: no simplification (a divide is never outer). It passes **no** constraints to its children, like FULL. Removing rows from either input changes which quotient values qualify: fewer divisor rows means an easier test, and with an empty divisor every R value qualifies.
 - `remove_useless_results_recurse`: no special handling (grouped with FULL/ANTI).
 - `get_relids_in_jointree`: counts as inner (like SEMI), because a divide nulls nothing.
@@ -101,7 +102,8 @@ Key idea: the divide's quals (`r.b = s.b`, from `USING`) are **matching rules**,
 
 ### Part 2: `src/backend/optimizer/plan/initsplan.c` (registering the divide)
 - `deconstruct_recurse`, new `case JOIN_DIVIDE`:
-  - Same domain and recursion as SEMI.
+  - R stays in the parent join domain. S gets its own child domain, like a LEFT JOIN's right side, and the divide's quals belong to that child domain.
+  - Why (bug found by the regression test): with S in the parent domain, a constant-false qual inside S (`WHERE false`) was lifted above the divide and emptied the whole result. An empty S should instead make every quotient value qualify.
   - `j->rtindex = 0`, like explicit SEMI: no NULL padding, and alias Vars are already flattened, so it needs no outer-join identity.
   - `nonnullable_rels = qualscope` (both sides). Effect in `distribute_qual_to_rels`: the quals are `is_pushed_down = false`, not ECs, and evaluated exactly at the divide's level. They also skip the left/right/full outer-join clause lists, so no constant gets derived into S.
 - Joinlist: DIVIDE forces its own subproblem, like FULL, so no outside rel is joined into R or S before dividing.
@@ -232,7 +234,24 @@ Key idea: the divide's quals (`r.b = s.b`, from `USING`) are **matching rules**,
   - `pg_dump` → restore into a new database → same results.
 - **Regression suite** (`meson test --suite setup --suite regress`): all pass.
 
+## 6. Regression test
+- `src/test/regress/sql/divide.sql` + `expected/divide.out`, run as `test: divide` in `parallel_schedule` (before `tablespace`, which must stay last).
+- 10 tests:
+  1. Both syntax forms + `EXPLAIN`
+  2. Matches double `NOT EXISTS`
+  3. Empty S
+  4. Empty R
+  5. NULL in S
+  6. Several divisor/quotient columns, unused quotient column still groups
+  7. Cross-type divisor + computed quotient column (`a % 2`)
+  8. Errors: no divisor, hidden inputs, bad `USING` column, non-hashable quotient
+  9. Rescan with correlated divisor
+  10. View deparse
+- Writing it found two planner bugs, both fixed (see Planner parts 1 and 2):
+  - Empty S via `WHERE false` returned no rows.
+  - A computed quotient column grouped by the wrong value.
+- After the fixes: the whole suite passes, and 40 more randomized trials with computed quotient columns and subquery inputs give 0 mismatches.
+
 ## Still to do
-- Regression test file: `src/test/regress/sql/divide.sql` + `expected/divide.out`, added to `parallel_schedule`.
 - Docs: `DIVIDE` in `doc/src/sgml/ref/select.sgml`.
 - Spill to disk / honor `work_mem` for large inputs.

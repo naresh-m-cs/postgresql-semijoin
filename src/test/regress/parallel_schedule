@@ -142,6 +142,9 @@ test: event_trigger_login
 # this test also uses event triggers, so likewise run it by itself
 test: fast_default
 
+# Explicit DIVIDE (relational division) syntax and semantics.
+test: divide
+
 # run tablespace test at the end because it drops the tablespace created during
 # setup that other tests may use.
 test: tablespace
