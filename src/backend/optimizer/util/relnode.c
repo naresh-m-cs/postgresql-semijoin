@@ -2002,6 +2002,13 @@ build_joinrel_partition_info(PlannerInfo *root,
 		return;
 	}
 
+	/* A divide is never done partitionwise */
+	if (sjinfo->jointype == JOIN_DIVIDE)
+	{
+		Assert(!IS_PARTITIONED_REL(joinrel));
+		return;
+	}
+
 	/*
 	 * We can only consider this join as an input to further partitionwise
 	 * joins if (a) the input relations are partitioned and have

@@ -151,6 +151,7 @@ extern void initial_cost_nestloop(PlannerInfo *root,
 								  JoinType jointype,
 								  Path *outer_path, Path *inner_path,
 								  JoinPathExtraData *extra);
+extern void cost_divide(PlannerInfo *root, DividePath *path);
 extern void final_cost_nestloop(PlannerInfo *root, NestPath *path,
 								JoinCostWorkspace *workspace,
 								JoinPathExtraData *extra);

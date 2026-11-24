@@ -2746,6 +2746,45 @@ create_nestloop_path(PlannerInfo *root,
 }
 
 /*
+ * create_divide_path
+ *	  Creates a pathnode for R DIVIDE S (outer_path = R, inner_path = S).
+ *
+ * Both inputs must be unparameterized: a divide reads each input in full.
+ * The output is unordered.
+ */
+DividePath *
+create_divide_path(PlannerInfo *root,
+				   RelOptInfo *joinrel,
+				   Path *outer_path,
+				   Path *inner_path,
+				   SpecialJoinInfo *sjinfo,
+				   List *restrict_clauses)
+{
+	DividePath *pathnode = makeNode(DividePath);
+
+	Assert(PATH_REQ_OUTER(outer_path) == NULL);
+	Assert(PATH_REQ_OUTER(inner_path) == NULL);
+
+	pathnode->jpath.path.pathtype = T_Divide;
+	pathnode->jpath.path.parent = joinrel;
+	pathnode->jpath.path.pathtarget = joinrel->reltarget;
+	pathnode->jpath.path.param_info = NULL;
+	pathnode->jpath.path.parallel_aware = false;
+	pathnode->jpath.path.parallel_safe = false;
+	pathnode->jpath.path.parallel_workers = 0;
+	pathnode->jpath.path.pathkeys = NIL;
+	pathnode->jpath.jointype = JOIN_DIVIDE;
+	pathnode->jpath.inner_unique = false;
+	pathnode->jpath.outerjoinpath = outer_path;
+	pathnode->jpath.innerjoinpath = inner_path;
+	pathnode->jpath.joinrestrictinfo = restrict_clauses;
+
+	cost_divide(root, pathnode);
+
+	return pathnode;
+}
+
+/*
  * create_mergejoin_path
  *	  Creates a pathnode corresponding to a mergejoin join between
  *	  two relations

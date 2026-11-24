@@ -156,6 +156,12 @@ extern Relids calc_nestloop_required_outer(Relids outerrelids,
 										   Relids inner_paramrels);
 extern Relids calc_non_nestloop_required_outer(Path *outer_path, Path *inner_path);
 
+extern DividePath *create_divide_path(PlannerInfo *root,
+									  RelOptInfo *joinrel,
+									  Path *outer_path,
+									  Path *inner_path,
+									  SpecialJoinInfo *sjinfo,
+									  List *restrict_clauses);
 extern NestPath *create_nestloop_path(PlannerInfo *root,
 									  RelOptInfo *joinrel,
 									  JoinType jointype,

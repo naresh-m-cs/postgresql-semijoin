@@ -2783,6 +2783,11 @@ finalize_plan(PlannerInfo *root, Plan *plan,
 			}
 			break;
 
+		case T_Divide:
+			finalize_primnode((Node *) ((Join *) plan)->joinqual,
+							  &context);
+			break;
+
 		case T_NestLoop:
 			{
 				finalize_primnode((Node *) ((Join *) plan)->joinqual,

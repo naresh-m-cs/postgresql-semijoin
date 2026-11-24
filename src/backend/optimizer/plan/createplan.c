@@ -161,6 +161,7 @@ static CustomScan *create_customscan_plan(PlannerInfo *root,
 										  CustomPath *best_path,
 										  List *tlist, List *scan_clauses);
 static NestLoop *create_nestloop_plan(PlannerInfo *root, NestPath *best_path);
+static Divide *create_divide_plan(PlannerInfo *root, DividePath *best_path);
 static MergeJoin *create_mergejoin_plan(PlannerInfo *root, MergePath *best_path);
 static HashJoin *create_hashjoin_plan(PlannerInfo *root, HashPath *best_path);
 static Node *replace_nestloop_params(PlannerInfo *root, Node *expr);
@@ -415,6 +416,7 @@ create_plan_recurse(PlannerInfo *root, Path *best_path, int flags)
 		case T_HashJoin:
 		case T_MergeJoin:
 		case T_NestLoop:
+		case T_Divide:
 			plan = create_join_plan(root,
 									(JoinPath *) best_path);
 			break;
@@ -1096,6 +1098,10 @@ create_join_plan(PlannerInfo *root, JoinPath *best_path)
 		case T_NestLoop:
 			plan = (Plan *) create_nestloop_plan(root,
 												 (NestPath *) best_path);
+			break;
+		case T_Divide:
+			plan = (Plan *) create_divide_plan(root,
+											   (DividePath *) best_path);
 			break;
 		default:
 			elog(ERROR, "unrecognized node type: %d",
@@ -4487,6 +4493,69 @@ create_nestloop_plan(PlannerInfo *root,
 	copy_generic_path_info(&join_plan->join.plan, &best_path->jpath.path);
 
 	return join_plan;
+}
+
+/*
+ * create_divide_plan
+ *	  Create a Divide plan for R DIVIDE S.
+ *
+ * The outer (R) plan gets an exact tlist so that its entries are exactly
+ * the quotient columns plus the divisor columns used by the match quals.
+ * Every outer tlist entry not referenced by the quals is a quotient column;
+ * record their positions for the executor.
+ */
+static Divide *
+create_divide_plan(PlannerInfo *root, DividePath *best_path)
+{
+	Divide	   *node = makeNode(Divide);
+	Plan	   *plan = &node->join.plan;
+	List	   *tlist = build_path_tlist(root, &best_path->jpath.path);
+	Plan	   *outer_plan;
+	Plan	   *inner_plan;
+	List	   *joinclauses;
+	List	   *qual_vars;
+	AttrNumber *quotColIdx;
+	int			numQuotCols = 0;
+	ListCell   *lc;
+
+	outer_plan = create_plan_recurse(root, best_path->jpath.outerjoinpath,
+									 CP_EXACT_TLIST);
+	inner_plan = create_plan_recurse(root, best_path->jpath.innerjoinpath, 0);
+
+	/* The match quals; any pseudoconstant clauses are ignored here */
+	joinclauses = extract_actual_clauses(order_qual_clauses(root,
+															best_path->jpath.joinrestrictinfo),
+										 false);
+
+	/* Quotient columns = outer tlist entries the match quals don't use */
+	qual_vars = pull_var_clause((Node *) joinclauses,
+								PVC_RECURSE_AGGREGATES |
+								PVC_RECURSE_WINDOWFUNCS |
+								PVC_INCLUDE_PLACEHOLDERS);
+	quotColIdx = (AttrNumber *)
+		palloc(sizeof(AttrNumber) * Max(list_length(outer_plan->targetlist), 1));
+	foreach(lc, outer_plan->targetlist)
+	{
+		TargetEntry *tle = lfirst_node(TargetEntry, lc);
+
+		if (list_member(qual_vars, tle->expr))
+			continue;			/* divisor column */
+		quotColIdx[numQuotCols++] = tle->resno;
+	}
+
+	plan->targetlist = tlist;
+	plan->qual = NIL;
+	plan->lefttree = outer_plan;
+	plan->righttree = inner_plan;
+	node->join.jointype = JOIN_DIVIDE;
+	node->join.inner_unique = false;
+	node->join.joinqual = joinclauses;
+	node->numQuotCols = numQuotCols;
+	node->quotColIdx = quotColIdx;
+
+	copy_generic_path_info(plan, &best_path->jpath.path);
+
+	return node;
 }
 
 static MergeJoin *

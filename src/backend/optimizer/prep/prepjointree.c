@@ -617,6 +617,12 @@ pull_up_sublinks_jointree_recurse(PlannerInfo *root, Node *jtnode,
 														 leftrelids,
 														 NULL, NULL);
 				break;
+			case JOIN_DIVIDE:
+				/*
+				 * Divide quals are only the generated USING equalities; never
+				 * pull sublinks out of them.
+				 */
+				break;
 			default:
 				elog(ERROR, "unrecognized join type: %d",
 					 (int) j->jointype);
@@ -1249,6 +1255,8 @@ pull_up_subqueries_recurse(PlannerInfo *root, Node *jtnode,
 			case JOIN_LEFT:
 			case JOIN_SEMI:
 			case JOIN_ANTI:
+			case JOIN_DIVIDE:
+				/* DIVIDE: like these, treat j as the lowest outer join */
 				j->larg = pull_up_subqueries_recurse(root, j->larg,
 													 j,
 													 NULL);
@@ -3447,6 +3455,9 @@ reduce_outer_joins_pass2(Node *jtnode,
 				 * to see JOIN_RIGHT_SEMI or JOIN_RIGHT_ANTI yet.
 				 */
 				break;
+			case JOIN_DIVIDE:
+				/* Nothing to simplify: a divide is never outer */
+				break;
 			default:
 				elog(ERROR, "unrecognized join type: %d",
 					 (int) jointype);
@@ -3549,8 +3560,13 @@ reduce_outer_joins_pass2(Node *jtnode,
 			 *
 			 * At a FULL join we just punt and pass nothing down --- is it
 			 * possible to be smarter?
+			 *
+			 * DIVIDE also passes nothing down.  Filtering rows out of either
+			 * input changes which quotient values qualify (e.g., removing
+			 * divisor rows, or R rows when the divisor is empty), so no
+			 * constraint may be used to reduce outer joins beneath it.
 			 */
-			if (jointype != JOIN_FULL)
+			if (jointype != JOIN_FULL && jointype != JOIN_DIVIDE)
 			{
 				local_nonnullable_rels = find_nonnullable_rels(j->quals);
 				local_forced_null_vars = find_forced_null_vars(j->quals);
@@ -3578,7 +3594,8 @@ reduce_outer_joins_pass2(Node *jtnode,
 					pass_nonnullable_rels = local_nonnullable_rels;
 					pass_forced_null_vars = local_forced_null_vars;
 				}
-				else if (jointype != JOIN_FULL) /* ie, LEFT or ANTI */
+				else if (jointype != JOIN_FULL &&
+						 jointype != JOIN_DIVIDE)	/* ie, LEFT or ANTI */
 				{
 					/* can't pass local constraints to non-nullable side */
 					pass_nonnullable_rels = nonnullable_rels;
@@ -3598,7 +3615,8 @@ reduce_outer_joins_pass2(Node *jtnode,
 
 			if (right_state->contains_outer)
 			{
-				if (jointype != JOIN_FULL)	/* ie, INNER/LEFT/SEMI/ANTI */
+				if (jointype != JOIN_FULL &&
+					jointype != JOIN_DIVIDE)	/* ie, INNER/LEFT/SEMI/ANTI */
 				{
 					/* pass appropriate constraints, per comment above */
 					pass_nonnullable_rels = local_nonnullable_rels;
@@ -4038,6 +4056,7 @@ remove_useless_results_recurse(PlannerInfo *root, Node *jtnode,
 				break;
 			case JOIN_FULL:
 			case JOIN_ANTI:
+			case JOIN_DIVIDE:
 				/* We have no special smarts for these cases */
 				break;
 			default:
@@ -4421,7 +4440,9 @@ get_relids_in_jointree(Node *jtnode, bool include_outer_joins,
 												 include_inner_joins));
 		if (j->rtindex)
 		{
-			if (j->jointype == JOIN_INNER || j->jointype == JOIN_SEMI)
+			/* SEMI and DIVIDE null nothing, so they count as inner */
+			if (j->jointype == JOIN_INNER || j->jointype == JOIN_SEMI ||
+				j->jointype == JOIN_DIVIDE)
 			{
 				if (include_inner_joins)
 					result = bms_add_member(result, j->rtindex);
@@ -4560,6 +4581,7 @@ get_nullingrels_recurse(Node *jtnode, Relids upper_nullingrels,
 		{
 			case JOIN_INNER:
 			case JOIN_SEMI:
+			case JOIN_DIVIDE:	/* nulls nothing */
 				get_nullingrels_recurse(j->larg, upper_nullingrels, info);
 				get_nullingrels_recurse(j->rarg, upper_nullingrels, info);
 				break;

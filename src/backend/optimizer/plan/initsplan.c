@@ -1404,6 +1404,61 @@ deconstruct_recurse(PlannerInfo *root, Node *jtnode,
 				/* Semi join adds no restrictions for quals */
 				jtitem->nonnullable_rels = NULL;
 				break;
+			case JOIN_DIVIDE:
+				/* This node belongs to parent_domain, as do its children */
+				jtitem->jdomain = parent_domain;
+				/* Recurse */
+				leftjoinlist = deconstruct_recurse(root, j->larg,
+												   parent_domain,
+												   jtitem,
+												   item_list);
+				left_item = (JoinTreeItem *) llast(*item_list);
+				rightjoinlist = deconstruct_recurse(root, j->rarg,
+													parent_domain,
+													jtitem,
+													item_list);
+				right_item = (JoinTreeItem *) llast(*item_list);
+				/* Compute qualscope etc */
+				jtitem->qualscope = bms_union(left_item->qualscope,
+											  right_item->qualscope);
+
+				/*
+				 * Every quotient column defines the groups, so it must reach
+				 * the divide even if nothing above uses it.  Mark its Vars
+				 * as needed at the divide (saved by subquery_planner).
+				 */
+				{
+					ListCell   *lr,
+							   *lv;
+
+					forboth(lr, root->divide_rtindexes,
+							lv, root->divide_quotvars)
+					{
+						if (lfirst_int(lr) == j->rtindex)
+							add_vars_to_targetlist(root, (List *) lfirst(lv),
+												   jtitem->qualscope);
+					}
+				}
+
+				/*
+				 * Like an explicit semijoin, a divide nulls nothing and its
+				 * alias Vars have been flattened, so it needs no outer-join
+				 * identity in subsequent planning.
+				 */
+				j->rtindex = 0;
+				jtitem->inner_join_rels = bms_union(left_item->inner_join_rels,
+													right_item->inner_join_rels);
+				jtitem->left_rels = left_item->qualscope;
+				jtitem->right_rels = right_item->qualscope;
+
+				/*
+				 * Treat both sides as nonnullable so that the divide's quals
+				 * (the generated USING equalities) are never pushed down into
+				 * either input and never feed EquivalenceClasses: they are
+				 * matching rules evaluated at the divide, not filters.
+				 */
+				jtitem->nonnullable_rels = jtitem->qualscope;
+				break;
 			case JOIN_FULL:
 				/* The FULL JOIN's quals need their very own domain */
 				fj_domain = makeNode(JoinDomain);
@@ -1462,9 +1517,11 @@ deconstruct_recurse(PlannerInfo *root, Node *jtnode,
 
 		/*
 		 * Compute the output joinlist.  We fold subproblems together except
-		 * at a FULL JOIN or where join_collapse_limit would be exceeded.
+		 * at a FULL JOIN or DIVIDE, or where join_collapse_limit would be
+		 * exceeded.  A divide is planned as its own subproblem so no other
+		 * rel is joined into either input.
 		 */
-		if (j->jointype == JOIN_FULL)
+		if (j->jointype == JOIN_FULL || j->jointype == JOIN_DIVIDE)
 		{
 			/* force the join order exactly at this node */
 			joinlist = list_make1(list_make2(leftjoinlist, rightjoinlist));
@@ -1799,6 +1856,15 @@ make_outerjoininfo(PlannerInfo *root,
 	{
 		RowMarkClause *rc = (RowMarkClause *) lfirst(l);
 
+		if (jointype == JOIN_DIVIDE &&
+			(bms_is_member(rc->rti, left_rels) ||
+			 bms_is_member(rc->rti, right_rels)))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			/*------
+			 translator: %s is a SQL row locking clause such as FOR UPDATE */
+					 errmsg("%s cannot be applied to an input of DIVIDE",
+							LCS_asString(rc->strength))));
 		if (bms_is_member(rc->rti, right_rels) ||
 			(jointype == JOIN_FULL && bms_is_member(rc->rti, left_rels)))
 			ereport(ERROR,
@@ -1821,8 +1887,11 @@ make_outerjoininfo(PlannerInfo *root,
 
 	compute_semijoin_info(root, sjinfo, clause);
 
-	/* If it's a full join, no need to be very smart */
-	if (jointype == JOIN_FULL)
+	/*
+	 * If it's a full join or divide, no need to be very smart: each side
+	 * must be joined in its entirety (no reordering into or out of it).
+	 */
+	if (jointype == JOIN_FULL || jointype == JOIN_DIVIDE)
 	{
 		sjinfo->min_lefthand = bms_copy(left_rels);
 		sjinfo->min_righthand = bms_copy(right_rels);
@@ -1876,7 +1945,29 @@ make_outerjoininfo(PlannerInfo *root,
 		 * A full join is an optimization barrier: we can't associate into or
 		 * out of it.  Hence, if it overlaps either LHS or RHS of the current
 		 * rel, expand that side's min relset to cover the whole full join.
+		 * A divide is the same kind of barrier, but has no ojrelid.
 		 */
+		if (otherinfo->jointype == JOIN_DIVIDE)
+		{
+			if (bms_overlap(left_rels, otherinfo->syn_lefthand) ||
+				bms_overlap(left_rels, otherinfo->syn_righthand))
+			{
+				min_lefthand = bms_add_members(min_lefthand,
+											   otherinfo->syn_lefthand);
+				min_lefthand = bms_add_members(min_lefthand,
+											   otherinfo->syn_righthand);
+			}
+			if (bms_overlap(right_rels, otherinfo->syn_lefthand) ||
+				bms_overlap(right_rels, otherinfo->syn_righthand))
+			{
+				min_righthand = bms_add_members(min_righthand,
+												otherinfo->syn_lefthand);
+				min_righthand = bms_add_members(min_righthand,
+												otherinfo->syn_righthand);
+			}
+			/* Needn't do anything else with the divide */
+			continue;
+		}
 		if (otherinfo->jointype == JOIN_FULL)
 		{
 			Assert(otherinfo->ojrelid != 0);

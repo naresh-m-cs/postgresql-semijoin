@@ -942,6 +942,25 @@ typedef struct NestLoop
 	List	   *nestParams;
 } NestLoop;
 
+/* ----------------
+ *		divide node (R DIVIDE S)
+ *
+ * lefttree (outer) is the dividend R, righttree (inner) is the divisor S.
+ * join.joinqual holds the generated USING equalities that match R's divisor
+ * columns to S's.  quotColIdx lists the outer-tlist positions of the
+ * quotient columns (every R column that is not a divisor column); the node
+ * returns each distinct quotient value that is paired in R with every S row.
+ * ----------------
+ */
+typedef struct Divide
+{
+	Join		join;
+	/* number of quotient columns */
+	int			numQuotCols;
+	/* their positions in the outer (R) tlist */
+	AttrNumber *quotColIdx pg_node_attr(array_size(numQuotCols));
+} Divide;
+
 typedef struct NestLoopParam
 {
 	pg_node_attr(no_equal, no_query_jumble)

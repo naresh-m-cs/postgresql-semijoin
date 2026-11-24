@@ -1073,6 +1073,27 @@ subquery_planner(PlannerGlobal *glob, Query *parse, PlannerInfo *parent_root,
 		{
 			RangeTblEntry *rte = lfirst_node(RangeTblEntry, l);
 
+			/*
+			 * DIVIDE: first save the base-rel Vars behind the quotient
+			 * columns.  All of them must reach the divide (they define the
+			 * groups), even if the rest of the query uses only some.
+			 */
+			if (rte->rtekind == RTE_JOIN && rte->jointype == JOIN_DIVIDE)
+			{
+				Node	   *qexprs;
+
+				qexprs = flatten_join_alias_vars(root, parse,
+												 (Node *) rte->joinaliasvars);
+				root->divide_rtindexes = lappend_int(root->divide_rtindexes,
+													 foreach_current_index(l) + 1);
+				root->divide_quotvars =
+					lappend(root->divide_quotvars,
+							pull_var_clause(qexprs,
+											PVC_RECURSE_AGGREGATES |
+											PVC_RECURSE_WINDOWFUNCS |
+											PVC_INCLUDE_PLACEHOLDERS));
+			}
+
 			rte->joinaliasvars = NIL;
 		}
 	}

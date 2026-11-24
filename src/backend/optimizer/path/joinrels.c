@@ -1057,6 +1057,27 @@ populate_joinrel_with_paths(PlannerInfo *root, RelOptInfo *rel1,
 								 JOIN_RIGHT_ANTI, sjinfo,
 								 restrictlist);
 			break;
+		case JOIN_DIVIDE:
+
+			/*
+			 * Only R (rel1) DIVIDE S (rel2), whole sides, never swapped:
+			 * make_outerjoininfo set min_lefthand/min_righthand to the full
+			 * syntactic sides, and make_join_rel already put them in order.
+			 * An empty R gives an empty result; an empty S does not (every
+			 * R value qualifies), so only rel1 is checked.
+			 */
+			if (!bms_equal(sjinfo->min_lefthand, rel1->relids) ||
+				!bms_equal(sjinfo->min_righthand, rel2->relids))
+				break;
+			if (is_dummy_rel(rel1))
+			{
+				mark_dummy_rel(joinrel);
+				break;
+			}
+			add_paths_to_joinrel(root, joinrel, rel1, rel2,
+								 JOIN_DIVIDE, sjinfo,
+								 restrictlist);
+			break;
 		default:
 			/* other values not expected here */
 			elog(ERROR, "unrecognized join type: %d", (int) sjinfo->jointype);

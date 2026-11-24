@@ -360,6 +360,15 @@ struct PlannerInfo
 	/* list of SpecialJoinInfos */
 	List	   *join_info_list;
 
+	/*
+	 * For each DIVIDE join RTE: its RT index and the base-rel Vars behind its
+	 * quotient columns.  Saved in subquery_planner before joinaliasvars are
+	 * discarded; used by deconstruct_jointree to keep every quotient column
+	 * in the dividend's output, even ones the query doesn't reference.
+	 */
+	List	   *divide_rtindexes;
+	List	   *divide_quotvars;
+
 	/* counter for assigning RestrictInfo serial numbers */
 	int			last_rinfo_serial;
 
@@ -2226,6 +2235,16 @@ typedef struct NestPath
 {
 	JoinPath	jpath;
 } NestPath;
+
+/*
+ * A divide path (R DIVIDE S) needs no special fields either: outerjoinpath
+ * is the dividend R, innerjoinpath is the divisor S, and joinrestrictinfo
+ * holds the generated USING equalities that match R's divisor columns to S.
+ */
+typedef struct DividePath
+{
+	JoinPath	jpath;
+} DividePath;
 
 /*
  * A mergejoin path has these fields.

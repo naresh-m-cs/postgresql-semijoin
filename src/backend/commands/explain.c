@@ -1421,6 +1421,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_NestLoop:
 			pname = sname = "Nested Loop";
 			break;
+		case T_Divide:
+			pname = sname = "Divide";
+			break;
 		case T_MergeJoin:
 			pname = "Merge";	/* "Join" gets added by jointype switch */
 			sname = "Merge Join";
@@ -2154,6 +2157,10 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				if (css->methods->ExplainCustomScan)
 					css->methods->ExplainCustomScan(css, ancestors, es);
 			}
+			break;
+		case T_Divide:
+			show_upper_qual(((Divide *) plan)->join.joinqual,
+							"Divide Cond", planstate, ancestors, es);
 			break;
 		case T_NestLoop:
 			show_upper_qual(((NestLoop *) plan)->join.joinqual,

@@ -108,7 +108,8 @@ my @nodetag_only_files = qw(
 # ABI stability during development.
 
 my $last_nodetag = 'WindowObjectData';
-my $last_nodetag_no = 479;
+# DIVIDE fork: +2 for DividePath and Divide (extensions must be rebuilt)
+my $last_nodetag_no = 481;
 
 # output file names
 my @output_files;

@@ -86,3 +86,61 @@ Syntax: `R DIVIDE S [USING (cols)]` → native executor node (`JOIN_DIVIDE`).
   - Why: `r.b` (a divisor column) has no single value per quotient row. Left visible, `SELECT r.b ...` would fail later with an internal planner error or return an arbitrary value.
   - PostgreSQL can hide a whole table name but not a single column, so `r.a` goes too. Per-column hiding would need changes to shared lookup code; not worth it.
   - Quotient columns stay reachable: unqualified (`a`) through the join's own entry, or `q.a` with `(r DIVIDE s) AS q`. Same rule as an aliased join.
+
+## 3. Planner
+
+Key idea: the divide's quals (`r.b = s.b`, from `USING`) are **matching rules**, not filters. They must stay at the divide: never pushed into R or S, never merged into EquivalenceClasses (ECs, the planner's sets of values known to be equal). The divide is also a fixed unit: nothing may be reordered into or out of it, and R/S never swap.
+
+### Part 1: `src/backend/optimizer/prep/prepjointree.c` (query-tree simplification)
+- `pull_up_sublinks_jointree_recurse`: `JOIN_DIVIDE` does nothing. Its quals are only the generated equalities, so there are no sublinks to pull up.
+- `pull_up_subqueries_recurse`: grouped with LEFT/SEMI/ANTI. Subqueries under the divide can be flattened, but the divide is passed as `lowest_outer_join`, so pulled-up expressions get wrapped safely.
+- `reduce_outer_joins_pass2`: no simplification (a divide is never outer). It passes **no** constraints to its children, like FULL. Removing rows from either input changes which quotient values qualify: fewer divisor rows means an easier test, and with an empty divisor every R value qualifies.
+- `remove_useless_results_recurse`: no special handling (grouped with FULL/ANTI).
+- `get_relids_in_jointree`: counts as inner (like SEMI), because a divide nulls nothing.
+- `get_nullingrels_recurse`: grouped with INNER/SEMI, because a divide nulls nothing.
+
+### Part 2: `src/backend/optimizer/plan/initsplan.c` (registering the divide)
+- `deconstruct_recurse`, new `case JOIN_DIVIDE`:
+  - Same domain and recursion as SEMI.
+  - `j->rtindex = 0`, like explicit SEMI: no NULL padding, and alias Vars are already flattened, so it needs no outer-join identity.
+  - `nonnullable_rels = qualscope` (both sides). Effect in `distribute_qual_to_rels`: the quals are `is_pushed_down = false`, not ECs, and evaluated exactly at the divide's level. They also skip the left/right/full outer-join clause lists, so no constant gets derived into S.
+- Joinlist: DIVIDE forces its own subproblem, like FULL, so no outside rel is joined into R or S before dividing.
+- `make_outerjoininfo`:
+  - Same as FULL: `min_lefthand` / `min_righthand` = whole sides, so nothing is reordered inside the divide.
+  - Joins above a divide treat it as a barrier, like FULL, but without `ojrelid` (it's 0).
+  - `FOR UPDATE/SHARE` on either input is an error: a quotient row stands for many R rows.
+- `deconstruct_distribute` needed no change: a non-SEMI join already gets `ojscope = min_lefthand ∪ min_righthand`.
+
+### Keeping all quotient columns (`planner.c`, `initsplan.c`, `pathnodes.h`)
+- Problem: the planner normally drops columns nothing above uses. For `r(a, c, b) DIVIDE s(b)` with `SELECT a`, it would drop `c`. But the quotient is grouped by **all** non-divisor columns (`a`, `c`), so dropping `c` gives wrong answers.
+- `subquery_planner` (planner.c) discards each join's column-to-Var mapping (`joinaliasvars`). Just before that, for each DIVIDE join it saves the base-rel Vars behind the quotient columns in two new `PlannerInfo` fields: `divide_rtindexes` and `divide_quotvars`.
+- `deconstruct_recurse` (DIVIDE case) marks those Vars as needed at the divide (`add_vars_to_targetlist`), so every quotient column reaches it. The divide's own output still contains only the columns used above.
+
+### Part 3: paths and cost
+- `pathnodes.h`: new `DividePath` (just a `JoinPath`: outer = R, inner = S, `joinrestrictinfo` = match quals).
+- `joinrels.c` `populate_joinrel_with_paths`: `JOIN_DIVIDE` case.
+  - Only exact R (rel1) ÷ S (rel2), never swapped.
+  - Empty R gives an empty result. Empty S doesn't (every R value qualifies), so only R is checked.
+- `joinpath.c` `add_paths_to_joinrel`: for DIVIDE, build one path from R's and S's cheapest unparameterized paths and return. Nestloop/merge/hash don't apply.
+- `pathnode.c` `create_divide_path`: fills the path, which is unordered, not parallel, and unparameterized.
+- `costsize.c`:
+  - Row estimate: `|R| / |S|`. An R group needs at least |S| rows to qualify. Join selectivity is skipped because the quals aren't filters (and `eqjoinsel` would raise "unrecognized join type").
+  - `cost_divide`: both inputs are startup cost (must read all of S and R before any quotient is known). Plus one step per input row, the quals once per R row, and a per-output-row charge.
+- `relnode.c`: a divide is never partitionwise.
+
+### Part 4: plan node
+- `plannodes.h`: new `Divide` node = `Join` plus `numQuotCols` / `quotColIdx` (positions of quotient columns in R's output). The executor groups by these.
+- `createplan.c` `create_divide_plan`:
+  - R is built with an exact column list.
+  - Quotient columns = R's output columns not used by the match quals.
+  - `joinqual` = match quals.
+- `setrefs.c`: `T_Divide` uses `set_join_references`, which rewrites Vars to OUTER (R) / INNER (S).
+- `subselect.c` `finalize_plan`: `T_Divide` handles params in `joinqual`.
+- `explain.c`: shows `Divide` with `Divide Cond`. It only works once the executor exists, because EXPLAIN also initializes the executor.
+- `gen_node_support.pl`: the stable-branch ABI check's last nodetag number goes 479 → 481 (two new node types). Extensions built for stock 18 must be rebuilt.
+
+### Verified (2026-11-24)
+- `SELECT * FROM r DIVIDE s` reaches the executor: `ERROR: unrecognized node type: 358` (358 = `T_Divide`, no executor node yet).
+- Plan (via `debug_print_plan`): `Divide` → outer SeqScan r (a, b), inner SeqScan s (b), `joinqual` r.b = s.b, output `a`, `quotColIdx (1)`.
+- `r3(a, c, b) DIVIDE s`, `SELECT a`: `quotColIdx (1 2)`, so `c` is kept.
+- `s.b` / `r.a` after the divide: "invalid reference to FROM-clause entry". `q.a` via an alias works.

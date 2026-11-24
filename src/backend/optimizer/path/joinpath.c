@@ -152,6 +152,26 @@ add_paths_to_joinrel(PlannerInfo *root,
 	extra.param_source_rels = NULL;
 
 	/*
+	 * DIVIDE has exactly one implementation: a Divide node over the cheapest
+	 * unparameterized paths of R (outer) and S (inner).  None of the
+	 * nestloop/merge/hash strategies below apply.
+	 */
+	if (jointype == JOIN_DIVIDE)
+	{
+		Path	   *outer_path = outerrel->cheapest_total_path;
+		Path	   *inner_path = innerrel->cheapest_total_path;
+
+		if (outer_path != NULL && inner_path != NULL &&
+			PATH_REQ_OUTER(outer_path) == NULL &&
+			PATH_REQ_OUTER(inner_path) == NULL)
+			add_path(joinrel, (Path *)
+					 create_divide_path(root, joinrel,
+										outer_path, inner_path,
+										sjinfo, restrictlist));
+		return;
+	}
+
+	/*
 	 * See if the inner relation is provably unique for this outer rel.
 	 *
 	 * We have some special cases: for JOIN_SEMI and JOIN_ANTI, it doesn't

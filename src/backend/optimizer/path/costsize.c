@@ -3240,6 +3240,41 @@ cost_group(Path *path, PlannerInfo *root,
 }
 
 /*
+ * cost_divide
+ *	  Determines and returns the cost of a divide path (R DIVIDE S).
+ *
+ * The executor must read all of S and all of R before it can tell whether
+ * any quotient value qualifies, so both inputs are pure startup cost.  On
+ * top of that: one hash/compare step per input row, one evaluation of the
+ * match quals per R row, and the usual per-output-row charge.
+ */
+void
+cost_divide(PlannerInfo *root, DividePath *path)
+{
+	Path	   *outer_path = path->jpath.outerjoinpath;
+	Path	   *inner_path = path->jpath.innerjoinpath;
+	double		outer_rows = outer_path->rows;
+	double		inner_rows = inner_path->rows;
+	QualCost	qual_cost;
+	Cost		startup_cost;
+	Cost		run_cost;
+
+	path->jpath.path.disabled_nodes =
+		outer_path->disabled_nodes + inner_path->disabled_nodes;
+	path->jpath.path.rows = path->jpath.path.parent->rows;
+
+	startup_cost = outer_path->total_cost + inner_path->total_cost;
+	startup_cost += cpu_operator_cost * (outer_rows + inner_rows);
+	cost_qual_eval(&qual_cost, path->jpath.joinrestrictinfo, root);
+	startup_cost += qual_cost.startup + qual_cost.per_tuple * outer_rows;
+
+	run_cost = cpu_tuple_cost * path->jpath.path.rows;
+
+	path->jpath.path.startup_cost = startup_cost;
+	path->jpath.path.total_cost = startup_cost + run_cost;
+}
+
+/*
  * initial_cost_nestloop
  *	  Preliminary estimate of the cost of a nestloop join path.
  *
@@ -5512,6 +5547,14 @@ calc_joinrel_size_estimate(PlannerInfo *root,
 	Selectivity jselec;
 	Selectivity pselec;
 	double		nrows;
+
+	/*
+	 * DIVIDE: the quals are matching rules, not filters, so join selectivity
+	 * doesn't apply.  Use |R| / |S|: an R group needs at least |S| rows to
+	 * qualify, so this bounds the number of quotient values.
+	 */
+	if (jointype == JOIN_DIVIDE)
+		return clamp_row_est(outer_rows / Max(inner_rows, 1.0));
 
 	/*
 	 * Compute joinclause selectivity.  Note that we are only considering
