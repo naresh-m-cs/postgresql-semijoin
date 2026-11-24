@@ -715,7 +715,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 	DATA_P DATABASE DAY_P DEALLOCATE DEC DECIMAL_P DECLARE DEFAULT DEFAULTS
 	DEFERRABLE DEFERRED DEFINER DELETE_P DELIMITER DELIMITERS DEPENDS DEPTH DESC
-	DETACH DICTIONARY DISABLE_P DISCARD DISTINCT DO DOCUMENT_P DOMAIN_P
+	DETACH DICTIONARY DISABLE_P DISCARD DISTINCT DIVIDE DO DOCUMENT_P DOMAIN_P
 	DOUBLE_P DROP
 
 	EACH ELSE EMPTY_P ENABLE_P ENCODING ENCRYPTED END_P ENFORCED ENUM_P ERROR_P
@@ -900,7 +900,12 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
  * They wouldn't be given a precedence at all, were it not that we need
  * left-associativity among the JOIN rules themselves.
  */
-%left		JOIN CROSS LEFT FULL RIGHT INNER_P NATURAL SEMI
+%left		JOIN CROSS LEFT FULL RIGHT INNER_P NATURAL SEMI DIVIDE
+/*
+ * In "a JOIN b DIVIDE c USING (...)", USING could belong to either operator.
+ * Giving USING higher precedence binds it to the nearest DIVIDE.
+ */
+%nonassoc	USING
 
 %%
 
@@ -13748,6 +13753,34 @@ joined_table:
 					n->quals = $6;
 					$$ = n;
 				}
+			| table_ref DIVIDE table_ref
+				{
+					/* Relational division; divisor columns matched by name */
+					JoinExpr   *n = makeNode(JoinExpr);
+
+					n->jointype = JOIN_DIVIDE;
+					n->isNatural = true;
+					n->larg = $1;
+					n->rarg = $3;
+					n->usingClause = NIL;
+					n->join_using_alias = NULL;
+					n->quals = NULL;
+					$$ = n;
+				}
+			| table_ref DIVIDE table_ref USING '(' name_list ')'
+				{
+					/* Relational division; divisor columns listed explicitly */
+					JoinExpr   *n = makeNode(JoinExpr);
+
+					n->jointype = JOIN_DIVIDE;
+					n->isNatural = false;
+					n->larg = $1;
+					n->rarg = $3;
+					n->usingClause = $6;
+					n->join_using_alias = NULL;
+					n->quals = NULL;
+					$$ = n;
+				}
 			| table_ref join_type JOIN table_ref join_qual
 				{
 					JoinExpr   *n = makeNode(JoinExpr);
@@ -18121,6 +18154,7 @@ type_func_name_keyword:
 			| CONCURRENTLY
 			| CROSS
 			| CURRENT_SCHEMA
+			| DIVIDE
 			| FREEZE
 			| FULL
 			| ILIKE
@@ -18348,6 +18382,7 @@ bare_label_keyword:
 			| DISABLE_P
 			| DISCARD
 			| DISTINCT
+			| DIVIDE
 			| DO
 			| DOCUMENT_P
 			| DOMAIN_P

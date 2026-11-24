@@ -1442,6 +1442,10 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 			case JOIN_RIGHT:
 				markRelsAsNulledBy(pstate, j->larg, j->rtindex);
 				break;
+			case JOIN_DIVIDE:
+				/* TODO: divisor columns, output columns, namespace rules */
+				elog(DEBUG1, "transformFromClauseItem: reached JOIN_DIVIDE");
+				break;
 			default:
 				/* shouldn't see any other types here */
 				elog(ERROR, "unrecognized join type: %d",

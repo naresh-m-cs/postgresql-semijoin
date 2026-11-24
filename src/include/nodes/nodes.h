@@ -323,6 +323,12 @@ typedef enum JoinType
 	JOIN_UNIQUE_INNER,			/* RHS path must be made unique */
 
 	/*
+	 * Relational division (R DIVIDE S): each distinct LHS row (minus the
+	 * divisor columns) that is paired in the LHS with every RHS row.
+	 */
+	JOIN_DIVIDE,				/* LHS rows related to all RHS rows */
+
+	/*
 	 * We might need additional join types someday.
 	 */
 } JoinType;
