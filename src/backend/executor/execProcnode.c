@@ -99,6 +99,7 @@
 #include "executor/nodeMergejoin.h"
 #include "executor/nodeModifyTable.h"
 #include "executor/nodeNamedtuplestorescan.h"
+#include "executor/nodeDivide.h"
 #include "executor/nodeNestloop.h"
 #include "executor/nodeProjectSet.h"
 #include "executor/nodeRecursiveunion.h"
@@ -297,6 +298,11 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 		case T_NestLoop:
 			result = (PlanState *) ExecInitNestLoop((NestLoop *) node,
 													estate, eflags);
+			break;
+
+		case T_Divide:
+			result = (PlanState *) ExecInitDivide((Divide *) node,
+												  estate, eflags);
 			break;
 
 		case T_MergeJoin:
@@ -689,6 +695,10 @@ ExecEndNode(PlanState *node)
 			 */
 		case T_NestLoopState:
 			ExecEndNestLoop((NestLoopState *) node);
+			break;
+
+		case T_DivideState:
+			ExecEndDivide((DivideState *) node);
 			break;
 
 		case T_MergeJoinState:

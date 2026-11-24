@@ -299,6 +299,16 @@ typedef struct
 	List	   *usingNames;		/* names assigned to merged columns */
 
 	/*
+	 * For a DIVIDE join: the USING (divisor) columns are not output columns,
+	 * so they aren't in leftattnos/rightattnos.  Their child attnos are
+	 * here instead, one entry per USING column; usingNames holds the names
+	 * chosen for them.
+	 */
+	int			ndivcols;		/* number of divisor columns */
+	int		   *divleftattnos;	/* left-child attnos of divisor cols */
+	int		   *divrightattnos; /* right-child attnos of divisor cols */
+
+	/*
 	 * Hash table holding copies of all the strings appearing in this struct's
 	 * colnames, new_colnames, and parentUsing.  We use a hash table only for
 	 * sufficiently wide relations, and only during the colname-assignment
@@ -4299,7 +4309,42 @@ set_using_names(deparse_namespace *dpns, Node *jtnode, List *parentUsing)
 		 * implemented by the same code, with only the difference of whether
 		 * to put assigned names into dpns->using_names.
 		 */
-		if (j->usingClause)
+		if (j->usingClause && j->jointype == JOIN_DIVIDE)
+		{
+			/*
+			 * DIVIDE: the USING columns aren't join output columns, so just
+			 * pick a name for each and push it down to both children, so
+			 * that the USING list still resolves on both sides.
+			 */
+			parentUsing = list_copy(parentUsing);
+			i = 0;
+			foreach(lc, j->usingClause)
+			{
+				char	   *colname = strVal(lfirst(lc));
+
+				colname = make_colname_unique(colname, dpns, colinfo);
+				if (dpns->unique_using)
+					dpns->using_names = lappend(dpns->using_names, colname);
+
+				colinfo->usingNames = lappend(colinfo->usingNames, colname);
+				parentUsing = lappend(parentUsing, colname);
+
+				if (colinfo->divleftattnos[i] > 0)
+				{
+					expand_colnames_array_to(leftcolinfo,
+											 colinfo->divleftattnos[i]);
+					leftcolinfo->colnames[colinfo->divleftattnos[i] - 1] = colname;
+				}
+				if (colinfo->divrightattnos[i] > 0)
+				{
+					expand_colnames_array_to(rightcolinfo,
+											 colinfo->divrightattnos[i]);
+					rightcolinfo->colnames[colinfo->divrightattnos[i] - 1] = colname;
+				}
+				i++;
+			}
+		}
+		else if (j->usingClause)
 		{
 			/* Copy the input parentUsing list so we don't modify it */
 			parentUsing = list_copy(parentUsing);
@@ -4617,7 +4662,8 @@ set_join_column_names(deparse_namespace *dpns, RangeTblEntry *rte,
 	 * non-merged column.
 	 */
 	changed_any = false;
-	for (i = list_length(colinfo->usingNames); i < noldcolumns; i++)
+	for (i = (rte->jointype == JOIN_DIVIDE) ? 0 : list_length(colinfo->usingNames);
+		 i < noldcolumns; i++)
 	{
 		char	   *colname = colinfo->colnames[i];
 		char	   *real_colname;
@@ -4680,7 +4726,9 @@ set_join_column_names(deparse_namespace *dpns, RangeTblEntry *rte,
 	 * loops below, so its not-yet-filled entries must be zeroes.
 	 */
 	nnewcolumns = leftcolinfo->num_new_cols;
-	if (rte->jointype != JOIN_SEMI)
+	if (rte->jointype == JOIN_DIVIDE)
+		nnewcolumns -= colinfo->ndivcols;	/* divisor cols aren't output */
+	else if (rte->jointype != JOIN_SEMI)
 		nnewcolumns += rightcolinfo->num_new_cols -
 			list_length(colinfo->usingNames);
 	colinfo->num_new_cols = nnewcolumns;
@@ -4702,6 +4750,18 @@ set_join_column_names(deparse_namespace *dpns, RangeTblEntry *rte,
 	 * less one), j indexes new_colnames/is_new_col, and ic/jc have similar
 	 * meanings for the current child RTE.
 	 */
+
+	/*
+	 * DIVIDE: skip the left child's divisor columns, just as merged columns
+	 * are skipped below (but they produce no output column).
+	 */
+	if (rte->jointype == JOIN_DIVIDE)
+	{
+		for (int k = 0; k < colinfo->ndivcols; k++)
+			if (colinfo->divleftattnos[k] > 0)
+				leftmerged = bms_add_member(leftmerged,
+											colinfo->divleftattnos[k]);
+	}
 
 	/* Handle merged columns; they are first and can't be new */
 	i = j = 0;
@@ -4774,7 +4834,7 @@ set_join_column_names(deparse_namespace *dpns, RangeTblEntry *rte,
 
 	/* Handle non-merged right-child columns in exactly the same way */
 	ic = 0;
-	for (jc = 0; rte->jointype != JOIN_SEMI &&
+	for (jc = 0; rte->jointype != JOIN_SEMI && rte->jointype != JOIN_DIVIDE &&
 		 jc < rightcolinfo->num_new_cols; jc++)
 	{
 		char	   *child_colname = rightcolinfo->new_colnames[jc];
@@ -5100,6 +5160,35 @@ identify_join_columns(JoinExpr *j, RangeTblEntry *jrte,
 	Assert(numjoincols == list_length(jrte->eref->colnames));
 	colinfo->leftattnos = (int *) palloc0(numjoincols * sizeof(int));
 	colinfo->rightattnos = (int *) palloc0(numjoincols * sizeof(int));
+
+	/*
+	 * DIVIDE: joinleftcols lists the quotient columns (the join's output)
+	 * and then the divisor columns; joinrightcols lists the divisor columns.
+	 * See transformFromClauseItem.
+	 */
+	if (jrte->jointype == JOIN_DIVIDE)
+	{
+		int			ndiv = list_length(jrte->joinrightcols);
+		int			k;
+
+		Assert(list_length(jrte->joinleftcols) == numjoincols + ndiv);
+		colinfo->ndivcols = ndiv;
+		colinfo->divleftattnos = (int *) palloc0(Max(ndiv, 1) * sizeof(int));
+		colinfo->divrightattnos = (int *) palloc0(Max(ndiv, 1) * sizeof(int));
+		k = 0;
+		foreach(lc, jrte->joinleftcols)
+		{
+			if (k < numjoincols)
+				colinfo->leftattnos[k] = lfirst_int(lc);
+			else
+				colinfo->divleftattnos[k - numjoincols] = lfirst_int(lc);
+			k++;
+		}
+		k = 0;
+		foreach(lc, jrte->joinrightcols)
+			colinfo->divrightattnos[k++] = lfirst_int(lc);
+		return;
+	}
 
 	/*
 	 * Deconstruct RTE's joinleftcols/joinrightcols into desired format.
@@ -7777,7 +7866,12 @@ get_variable(Var *var, int levelsup, bool istoplevel, deparse_context *context)
 	{
 		if (rte->joinaliasvars == NIL)
 			elog(ERROR, "cannot decompile join alias var in plan tree");
-		if (attnum > 0)
+
+		/*
+		 * A DIVIDE hides its inputs, so never print an input's name: fall
+		 * through and print the unqualified join column name.
+		 */
+		if (attnum > 0 && rte->jointype != JOIN_DIVIDE)
 		{
 			Var		   *aliasvar;
 
@@ -12593,6 +12687,13 @@ get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 				break;
 			case JOIN_SEMI:
 				appendContextKeyword(context, " SEMI JOIN ",
+									 -PRETTYINDENT_STD,
+									 PRETTYINDENT_STD,
+									 PRETTYINDENT_JOIN);
+				break;
+			case JOIN_DIVIDE:
+				/* always printed with USING, even if written without */
+				appendContextKeyword(context, " DIVIDE ",
 									 -PRETTYINDENT_STD,
 									 PRETTYINDENT_STD,
 									 PRETTYINDENT_JOIN);

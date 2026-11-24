@@ -1618,8 +1618,12 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 										res_nscolumns + res_colindex);
 		}
 
-		/* If join has an alias, it syntactically hides all inputs */
-		if (j->alias)
+		/*
+		 * If join has an alias, it syntactically hides all inputs.  A DIVIDE
+		 * hides its inputs even without an alias, so its output columns must
+		 * likewise be referenced (and deparsed) as columns of the join.
+		 */
+		if (j->alias || j->jointype == JOIN_DIVIDE)
 		{
 			for (k = 0; k < res_colindex; k++)
 			{
@@ -1633,17 +1637,46 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		/*
 		 * Now build an RTE and nsitem for the result of the join.
 		 */
-		nsitem = addRangeTableEntryForJoin(pstate,
-										   res_colnames,
-										   res_nscolumns,
-										   j->jointype,
-										   list_length(j->usingClause),
-										   res_colvars,
-										   l_colnos,
-										   r_colnos,
-										   j->join_using_alias,
-										   j->alias,
-										   true);
+		if (j->jointype == JOIN_DIVIDE)
+		{
+			/*
+			 * DIVIDE has no merged columns: its output is only the quotient
+			 * columns.  l_colnos is the divisor positions in R followed by
+			 * the quotient positions; reorder so joinleftcols starts with
+			 * the quotient positions (one per output column) and then lists
+			 * the divisor positions, with joinrightcols holding the divisor
+			 * positions in S.  ruleutils.c needs the divisor positions to
+			 * print the USING list.
+			 */
+			int			ndiv = list_length(j->usingClause);
+			List	   *leftcols;
+
+			leftcols = list_concat(list_copy_tail(l_colnos, ndiv),
+								   list_truncate(list_copy(l_colnos), ndiv));
+			nsitem = addRangeTableEntryForJoin(pstate,
+											   res_colnames,
+											   res_nscolumns,
+											   j->jointype,
+											   0,
+											   res_colvars,
+											   leftcols,
+											   r_colnos,
+											   j->join_using_alias,
+											   j->alias,
+											   true);
+		}
+		else
+			nsitem = addRangeTableEntryForJoin(pstate,
+											   res_colnames,
+											   res_nscolumns,
+											   j->jointype,
+											   list_length(j->usingClause),
+											   res_colvars,
+											   l_colnos,
+											   r_colnos,
+											   j->join_using_alias,
+											   j->alias,
+											   true);
 
 		/* Verify that we correctly predicted the join's RT index */
 		Assert(j->rtindex == nsitem->p_rtindex);

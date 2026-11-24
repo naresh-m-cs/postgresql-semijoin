@@ -2154,6 +2154,48 @@ typedef struct JoinState
 } JoinState;
 
 /* ----------------
+ *	 DivideState information
+ *
+ *		State for R DIVIDE S; see nodeDivide.c for the algorithm.
+ *		R is the outer child, S the inner child.
+ * ----------------
+ */
+typedef struct DivideState
+{
+	JoinState	js;				/* its first field is NodeTag */
+	bool		built;			/* have both inputs been read yet? */
+
+	/* match quals split into R-side / S-side keys, for the S index */
+	bool		hashable;		/* can the S index use hashing? */
+	int			nkeys;			/* number of match quals */
+	ExprState **outerkeys;		/* R-side expression of each match qual */
+	ExprState **innerkeys;		/* S-side expression of each match qual */
+	FmgrInfo   *outerhashfns;	/* hash function for each R-side key */
+	FmgrInfo   *innerhashfns;	/* hash function for each S-side key */
+	Oid		   *keycollations;	/* collation of each match qual */
+
+	/* divisor (S) rows, numbered 0 .. ninner-1; arrays live in tablecxt */
+	int			ninner;			/* |S|, including rows with NULL keys */
+	MinimalTuple *innertuples;	/* copy of each S row */
+	uint32	   *innerhashes;	/* hash of each S row's keys */
+	int			nbuckets;		/* size of bucketheads (power of 2) */
+	int		   *bucketheads;	/* first S row in each bucket, or -1 */
+	int		   *bucketnext;		/* next S row in the same bucket, or -1 */
+	TupleTableSlot *innerslot;	/* holds a stored S row for qual checks */
+
+	/* quotient groups: one entry per distinct quotient value of R */
+	Oid		   *quotEqFuncOids;
+	FmgrInfo   *quotHashFunctions;
+	Oid		   *quotCollations;
+	TupleHashTable groups;		/* entry data: DivideGroupData */
+	TupleHashIterator groupiter;	/* for returning qualifying groups */
+	TupleTableSlot *groupslot;	/* holds a group's first R row for output */
+
+	MemoryContext tablecxt;		/* group tuples, bitmaps and S rows */
+	MemoryContext tempcxt;		/* per-R-row scratch for hashing */
+} DivideState;
+
+/* ----------------
  *	 NestLoopState information
  *
  *		NeedNewOuter	   true if need new outer tuple on next call

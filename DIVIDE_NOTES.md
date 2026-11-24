@@ -144,3 +144,95 @@ Key idea: the divide's quals (`r.b = s.b`, from `USING`) are **matching rules**,
 - Plan (via `debug_print_plan`): `Divide` → outer SeqScan r (a, b), inner SeqScan s (b), `joinqual` r.b = s.b, output `a`, `quotColIdx (1)`.
 - `r3(a, c, b) DIVIDE s`, `SELECT a`: `quotColIdx (1 2)`, so `c` is kept.
 - `s.b` / `r.a` after the divide: "invalid reference to FROM-clause entry". `q.a` via an alias works.
+
+## 4. Executor
+
+### Decisions
+| Question | Decision | Why |
+|---|---|---|
+| Empty S | Every distinct quotient value of R qualifies | Textbook definition (vacuous "for all") |
+| NULL in a divisor column | Never matches (SQL `=`). A NULL in S means no group qualifies; NULL `b` rows in R are ignored | Same answer as the standard double `NOT EXISTS` formulation |
+| NULL in a quotient column | NULLs group together | Same as `GROUP BY` |
+| Duplicates in R or S | Don't change the result; output is distinct quotient values | Relational (set) semantics |
+| Memory | Everything in memory; no spill to disk, `work_mem` not enforced | First version; spilling is future work |
+| Non-hashable quotient type | Error: "DIVIDE cannot group by quotient column of type …" | Grouping uses a hash table |
+| Non-hashable divisor operator (e.g. `box =`) | Still works, slower: all S rows in one bucket, `|R|·|S|` qual checks | Correctness over speed |
+
+### Algorithm (`src/backend/executor/nodeDivide.c`), all done on the first call
+1. **Read all of S.** Copy each row, number them 0…|S|−1, and index them in a chained hash table on their divisor values.
+   - Rows with a NULL divisor value go in no bucket. They can never match, but they still count toward |S|.
+2. **Read all of R.** Group rows by quotient value in a `TupleHashTable` (the same machinery `HashAgg`/`SetOp` use).
+   - Each group stores `nmatched` and a bitmap with one bit per S row.
+   - For each R row: hash its divisor values, walk that bucket, evaluate the real match quals on each candidate S row, and set the bit if it matches.
+   - Skip the probing once a group has matched every S row.
+3. **Return** each group with `nmatched == |S|`, projected from the group's first R row.
+- Cost: about |R| + |S| hash steps plus one qual check per hash-matching pair.
+- The match quals decide every match, so cross-type `USING` (int4 vs int8) works. Hash functions come from the operator's hash opfamily (`get_op_hash_functions`), as in hash join.
+
+### Files
+- `nodeDivide.c` / `nodeDivide.h`: `ExecInitDivide`, `ExecDivide`, `ExecEndDivide`, `ExecReScanDivide`.
+- `execnodes.h`: `DivideState` (key expressions and hash functions, S rows and buckets, groups table, iterator, two memory contexts).
+- `execProcnode.c` (init/end), `execAmi.c` (rescan), `meson.build` / `Makefile`.
+- `gen_node_support.pl`: nodetag ABI check 481 → 482 (`DivideState`).
+
+### Implementation notes
+- **Slot types:** expressions see R/S rows both straight from the children and as stored `MinimalTuple` copies. So `outeropsfixed` / `inneropsfixed` = false, otherwise an assertion fails (`op->d.fetch.kind == slot->tts_ops`). This was the first crash during testing.
+- **Memory:**
+  - `tablecxt` holds the S rows, group tuples and bitmaps; it's reset on rescan.
+  - `tempcxt` is per-R-row scratch for hashing.
+  - The groups table's metadata lives in the query context, so rescan is `ResetTupleHashTable` plus a reset of `tablecxt`.
+- **Rescan:** always forget everything and re-read both inputs. Children whose parameters changed are rescanned automatically.
+- **Children** are started without `EXEC_FLAG_REWIND`, because each is read once per scan.
+
+## 5. Deparse (views, `pg_get_viewdef`, `pg_dump`)
+- **Crash found during testing:** `pg_get_viewdef` on a DIVIDE view hit `Assert(jcolno == numjoincols)` in `ruleutils.c`.
+  - Cause: the join RTE described the divisor columns as merged output columns (`joinmergedcols = n`), but the real output is only the quotient columns.
+- **Fix in analysis (`parse_clause.c`):**
+  - The DIVIDE join RTE now has `joinmergedcols = 0`.
+  - `joinleftcols` = quotient positions (one per output column) followed by the divisor positions in R.
+  - `joinrightcols` = the divisor positions in S.
+- **Second problem:** the deparser printed `SELECT dr.a ...`, but `dr` is hidden after a divide, so the text couldn't be reparsed.
+  - Fix in analysis: the quotient columns' syntactic source (`varnosyn`) is the divide join, as is already done for aliased joins.
+  - Fix in `ruleutils.c` `get_variable`: an unnamed DIVIDE's columns print unqualified (`a`).
+- **`ruleutils.c`:**
+  - `deparse_columns` gets `ndivcols` / `divleftattnos` / `divrightattnos`.
+  - `identify_join_columns` splits `joinleftcols` for DIVIDE.
+  - `set_using_names` picks the `USING` names and pushes them to both children (no output column).
+  - `set_join_column_names` skips R's divisor columns and all of S.
+  - `get_from_clause_item` prints `DIVIDE`.
+- **Always printed with `USING (...)`,** even when written as `R DIVIDE S`. The column list is fixed when the view is created, as with `NATURAL JOIN`.
+- **Known limitation:** an unqualified quotient column could become ambiguous if a column with the same name is later added to another table in the same `FROM`. Aliasing the divide (`(r DIVIDE s) AS q`) avoids this.
+
+## Test results (2026-11-24, after executor)
+- `SELECT * FROM r DIVIDE s` → `a = 1`.
+  - `EXPLAIN` shows `Divide` / `Divide Cond: (r.b = s.b)`.
+  - `EXPLAIN ANALYZE` shows actual rows (1 output; 3 from r, 2 from s).
+- Edge cases (all as expected):
+
+| Case | Result |
+|---|---|
+| Duplicates + NULL quotient group | `1, 3, 4, NULL`; matches double `NOT EXISTS` |
+| Empty S | all distinct `a` incl. NULL |
+| Empty R | no rows |
+| NULL in S | no rows |
+| Two divisor + two quotient columns, select subset | `(1,x), (2,y)`; `SELECT a` → `1, 2` |
+| `USING` with unlisted shared column | `c` kept as quotient column |
+| Cross-type `USING` (int4 vs int8) | correct |
+| Non-hashable divisor (`box =`) | correct via fallback |
+| Non-hashable quotient (`box`) | clear error |
+| Quotient with no Vars (constant from pulled-up subquery) | correct |
+| Rescan (divisor depends on outer value) | correct per row |
+| Inside join + aggregate | correct |
+
+- **Randomized:** 40 trials (2000 R rows, 1–4 S rows, ~3% NULLs) compared with double `NOT EXISTS`: 0 mismatches.
+- **Views:**
+  - `pg_get_viewdef` gives valid SQL.
+  - Renaming a divisor column in both tables still deparses correctly.
+  - Recreating 4 views from their deparsed text gives identical results.
+  - `pg_dump` → restore into a new database → same results.
+- **Regression suite** (`meson test --suite setup --suite regress`): all pass.
+
+## Still to do
+- Regression test file: `src/test/regress/sql/divide.sql` + `expected/divide.out`, added to `parallel_schedule`.
+- Docs: `DIVIDE` in `doc/src/sgml/ref/select.sgml`.
+- Spill to disk / honor `work_mem` for large inputs.

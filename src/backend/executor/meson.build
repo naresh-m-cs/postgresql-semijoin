@@ -46,6 +46,7 @@ backend_sources += files(
   'nodeMergejoin.c',
   'nodeModifyTable.c',
   'nodeNamedtuplestorescan.c',
+  'nodeDivide.c',
   'nodeNestloop.c',
   'nodeProjectSet.c',
   'nodeRecursiveunion.c',
