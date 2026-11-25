@@ -44,6 +44,11 @@ SELECT a FROM div_r2 DIVIDE div_s2 USING (b1, b2) ORDER BY a;
 SELECT * FROM div_r DIVIDE (SELECT b::int8 AS b FROM div_s) t ORDER BY a;
 SELECT * FROM (SELECT a % 2 AS q, b FROM (VALUES (1,10), (3,20)) v(a, b)) t
   DIVIDE (VALUES (10), (20)) s(b);
+-- Non-hashable divisor operator (box =): all S rows go in one bucket,
+-- and the match condition alone decides each match
+SELECT * FROM (VALUES (1, box(point(0,0), point(1,1))),
+                      (2, box(point(0,0), point(2,2)))) r(a, b)
+  DIVIDE (VALUES (box(point(0,0), point(1,1)))) s(b) ORDER BY a;
 
 -- 8. Errors
 SELECT * FROM div_r DIVIDE (SELECT 1 AS z) t;           -- no divisor column
