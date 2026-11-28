@@ -304,6 +304,50 @@ transformOptionalSelectInto(ParseState *pstate, Node *parseTree)
 	return transformStmt(pstate, parseTree);
 }
 
+static CommonTableExpr *
+makeDivisionCTE(ParseState *pstate, Query *query, const char *baseName)
+{
+    CommonTableExpr *cte = makeNode(CommonTableExpr);
+    Index        levelsUp;
+    int          suffix = 0;
+    ListCell    *cell;
+
+    cte->ctename = pstrdup(baseName);
+    while (scanNameSpaceForCTE(pstate, cte->ctename, &levelsUp))
+        cte->ctename = psprintf("%s_%d", baseName, ++suffix);
+
+    cte->ctequery = (Node *) query;
+    cte->location = -1;
+
+    foreach(cell, query->targetList)
+    {
+        TargetEntry *column = lfirst_node(TargetEntry, cell);
+
+        if (!column->resjunk)
+            cte->aliascolnames = lappend(cte->aliascolnames,
+                                        makeString(psprintf("column_%d",
+                                                            column->resno)));
+    }
+
+    analyzeCTETargetList(pstate, cte, query->targetList);
+    return cte;
+}
+
+static ResTarget *
+makeDivisionColumn(char *relation, int columnNumber)
+{
+    ColumnRef *ref = makeNode(ColumnRef);
+    ResTarget *target = makeNode(ResTarget);
+
+    ref->fields = list_make2(makeString(relation),
+                            makeString(psprintf("column_%d", columnNumber)));
+    ref->location = -1;
+    target->val = (Node *) ref;
+    target->location = -1;
+
+    return target;
+}
+
 /*
  * transformStmt -
  *	  recursively transform a Parse tree into a Query tree.
@@ -372,6 +416,155 @@ transformStmt(ParseState *pstate, Node *parseTree)
 					result = transformValuesClause(pstate, n);
 				else if (n->op == SETOP_NONE)
 					result = transformSelectStmt(pstate, n);
+				else if (n->op == SETOP_DIVIDE)
+				{
+					Query *dividend;
+					Query *divisor;
+
+					Bitmapset *matched = NULL;
+					List *outputColumns = NIL;
+					ListCell *rightCell;
+					ListCell *leftCell;
+
+					CommonTableExpr *dividendCTE;
+					CommonTableExpr *divisorCTE;
+
+					List *matchedLeftColumns = NIL;
+
+					SelectStmt *required = makeNode(SelectStmt);
+					SelectStmt *available = makeNode(SelectStmt);
+					SelectStmt *missing = makeNode(SelectStmt);
+					ListCell *cell;
+
+					SelectStmt *candidates = makeNode(SelectStmt);
+					RangeVar *candidateRows;
+					RangeVar *takenRows;
+					List *keyChecks = NIL;
+					SubLink *missingExists = makeNode(SubLink);
+
+					dividend = parse_sub_analyze((Node *) n->larg, pstate, NULL, false, true);
+					divisor = parse_sub_analyze((Node *) n->rarg, pstate, NULL, false, true);
+
+					foreach(rightCell, divisor->targetList)
+					{
+						TargetEntry *right = lfirst_node(TargetEntry, rightCell);
+						TargetEntry *match = NULL;
+
+						if (right->resjunk)
+							continue;
+
+						foreach(leftCell, dividend->targetList)
+						{
+							TargetEntry *left = lfirst_node(TargetEntry, leftCell);
+
+							if (left->resjunk || strcmp(left->resname, right->resname) != 0)
+								continue;
+
+							if (match != NULL)
+								ereport(ERROR,
+										(errcode(ERRCODE_AMBIGUOUS_COLUMN),
+										errmsg("dividend has more than one column named \"%s\"",
+												right->resname)));
+
+							match = left;
+						}
+
+						if (match == NULL)
+							ereport(ERROR,
+									(errcode(ERRCODE_UNDEFINED_COLUMN),
+									errmsg("no dividend column matches \"%s\"", right->resname)));
+
+						if (bms_is_member(match->resno, matched))
+							ereport(ERROR,
+									(errcode(ERRCODE_AMBIGUOUS_COLUMN),
+									errmsg("divisor has more than one column named \"%s\"",
+											right->resname)));
+
+						matched = bms_add_member(matched, match->resno);
+						matchedLeftColumns = lappend(matchedLeftColumns, match);
+					}
+
+					foreach(leftCell, dividend->targetList)
+					{
+						TargetEntry *left = lfirst_node(TargetEntry, leftCell);
+
+						if (!left->resjunk && !bms_is_member(left->resno, matched))
+							outputColumns = lappend(outputColumns, left);
+					}
+
+					dividendCTE = makeDivisionCTE(pstate, dividend, "division_dividend");
+					divisorCTE = makeDivisionCTE(pstate, divisor, "division_divisor");
+
+					required->fromClause =
+							list_make1(makeRangeVar(NULL, divisorCTE->ctename, -1));
+					takenRows = makeRangeVar(NULL, dividendCTE->ctename, -1);
+					takenRows->alias = makeAlias("taken", NIL);
+					available->fromClause = list_make1(takenRows);
+
+					foreach(rightCell, divisor->targetList)
+					{
+						TargetEntry *column = lfirst_node(TargetEntry, rightCell);
+
+						if (!column->resjunk)
+							required->targetList = lappend(required->targetList,
+								makeDivisionColumn(divisorCTE->ctename, column->resno));
+					}
+
+					foreach(cell, matchedLeftColumns)
+					{
+						TargetEntry *column = lfirst_node(TargetEntry, cell);
+
+						available->targetList = lappend(available->targetList,
+											makeDivisionColumn("taken", column->resno));
+					}
+
+					missing->op = SETOP_EXCEPT;
+					missing->larg = required;
+					missing->rarg = available;
+
+
+					if (matchedLeftColumns == NIL || outputColumns == NIL)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								errmsg("DIVIDE BY requires at least one matched column and one result column")));
+
+					foreach(cell, outputColumns)
+					{
+						TargetEntry *column = lfirst_node(TargetEntry, cell);
+						ResTarget *candidate = makeDivisionColumn("candidate", column->resno);
+						ResTarget *taken = makeDivisionColumn("taken", column->resno);
+
+						candidate->name = column->resname;
+						candidates->targetList = lappend(candidates->targetList, candidate);
+
+						keyChecks = lappend(keyChecks,
+											makeSimpleA_Expr(AEXPR_NOT_DISTINCT, "=",
+															taken->val, copyObject(candidate->val),
+															-1));
+					}
+
+					available->whereClause = list_length(keyChecks) == 1
+						? linitial(keyChecks)
+						: (Node *) makeBoolExpr(AND_EXPR, keyChecks, -1);
+
+					candidateRows = makeRangeVar(NULL, dividendCTE->ctename, -1);
+					candidateRows->alias = makeAlias("candidate", NIL);
+					candidates->fromClause = list_make1(candidateRows);
+					candidates->distinctClause = list_make1(NULL);
+
+					missingExists->subLinkType = EXISTS_SUBLINK;
+					missingExists->subselect = (Node *) missing;
+					missingExists->location = -1;
+					candidates->whereClause = (Node *) makeBoolExpr(NOT_EXPR,
+															 list_make1(missingExists), -1);
+
+					pstate->p_ctenamespace = lappend(pstate->p_ctenamespace, dividendCTE);
+					pstate->p_ctenamespace = lappend(pstate->p_ctenamespace, divisorCTE);
+
+					result = transformStmt(pstate, (Node *) candidates);
+					result->cteList = list_make2(dividendCTE, divisorCTE);
+
+				}
 				else
 					result = transformSetOperationStmt(pstate, n);
 			}

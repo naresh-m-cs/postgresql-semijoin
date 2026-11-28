@@ -715,7 +715,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 	DATA_P DATABASE DAY_P DEALLOCATE DEC DECIMAL_P DECLARE DEFAULT DEFAULTS
 	DEFERRABLE DEFERRED DEFINER DELETE_P DELIMITER DELIMITERS DEPENDS DEPTH DESC
-	DETACH DICTIONARY DISABLE_P DISCARD DISTINCT DO DOCUMENT_P DOMAIN_P
+	DETACH DICTIONARY DISABLE_P DISCARD DISTINCT DIVIDE DO DOCUMENT_P DOMAIN_P
 	DOUBLE_P DROP
 
 	EACH ELSE EMPTY_P ENABLE_P ENCODING ENCRYPTED END_P ENFORCED ENUM_P ERROR_P
@@ -805,7 +805,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
  * FORMAT_LA, NULLS_LA, WITH_LA, and WITHOUT_LA are needed to make the grammar
  * LALR(1).
  */
-%token		FORMAT_LA NOT_LA NULLS_LA WITH_LA WITHOUT_LA
+%token      DIVIDE_LA FORMAT_LA NOT_LA NULLS_LA WITH_LA WITHOUT_LA
 
 /*
  * The grammar likewise thinks these tokens are keywords, but they are never
@@ -822,7 +822,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 
 /* Precedence: lowest to highest */
-%left		UNION EXCEPT
+%left		UNION EXCEPT DIVIDE_LA
 %left		INTERSECT
 %left		OR
 %left		AND
@@ -12994,6 +12994,10 @@ simple_select:
 				{
 					$$ = makeSetOp(SETOP_INTERSECT, $3 == SET_QUANTIFIER_ALL, $1, $4);
 				}
+			| select_clause DIVIDE_LA BY select_clause %prec DIVIDE_LA
+				{
+					$$ = makeSetOp(SETOP_DIVIDE, false, $1, $4);
+				}
 			| select_clause EXCEPT set_quantifier select_clause
 				{
 					$$ = makeSetOp(SETOP_EXCEPT, $3 == SET_QUANTIFIER_ALL, $1, $4);
@@ -17770,6 +17774,7 @@ unreserved_keyword:
 			| DICTIONARY
 			| DISABLE_P
 			| DISCARD
+			| DIVIDE
 			| DOCUMENT_P
 			| DOMAIN_P
 			| DOUBLE_P
@@ -18348,6 +18353,7 @@ bare_label_keyword:
 			| DISABLE_P
 			| DISCARD
 			| DISTINCT
+			| DIVIDE
 			| DO
 			| DOCUMENT_P
 			| DOMAIN_P

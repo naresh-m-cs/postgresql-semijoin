@@ -2175,6 +2175,7 @@ typedef enum SetOperation
 	SETOP_UNION,
 	SETOP_INTERSECT,
 	SETOP_EXCEPT,
+	SETOP_DIVIDE,
 } SetOperation;
 
 typedef struct SelectStmt

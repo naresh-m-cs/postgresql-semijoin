@@ -137,6 +137,9 @@ base_yylex(YYSTYPE *lvalp, YYLTYPE *llocp, core_yyscan_t yyscanner)
 	 */
 	switch (cur_token)
 	{
+		case DIVIDE:
+			cur_token_length = 6;
+			break;
 		case FORMAT:
 			cur_token_length = 6;
 			break;
@@ -194,6 +197,10 @@ base_yylex(YYSTYPE *lvalp, YYLTYPE *llocp, core_yyscan_t yyscanner)
 	/* Replace cur_token if needed, based on lookahead */
 	switch (cur_token)
 	{
+		case DIVIDE:
+			if (next_token == BY)
+				cur_token = DIVIDE_LA;
+			break;
 		case FORMAT:
 			/* Replace FORMAT by FORMAT_LA if it's followed by JSON */
 			switch (next_token)
